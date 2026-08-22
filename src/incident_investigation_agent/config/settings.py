@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     environment: str = Field(default="development")
     log_level: str = Field(default="INFO")
     api_port: int = Field(default=8000)
+    database_url: str = Field(default="sqlite:///./incident_investigation_agent.db")
 
 
 settings = Settings()
