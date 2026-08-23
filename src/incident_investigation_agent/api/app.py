@@ -93,6 +93,17 @@ def get_incident_alerts(
     ]
 
 
+@app.get("/incidents/{incident_id}/investigation")
+def investigate_incident(
+    incident_id: str,
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> dict:
+    investigation = incident_service.investigate(incident_id)
+    if investigation is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    return investigation
+
+
 @app.get("/services/{service_name}/deployments")
 def get_service_deployments(
     service_name: str,

@@ -48,6 +48,35 @@ class IncidentService:
     def get_deployments(self, service_name: str) -> list[Deployment]:
         return self.repository.get_deployments_for_service(service_name)
 
+    def investigate(self, incident_id: str) -> dict[str, Any] | None:
+        incident = self.get_incident(incident_id)
+        if incident is None:
+            return None
+
+        logs = self.get_logs(incident_id)
+        alerts = self.get_alerts(incident_id)
+        deployments = self.get_deployments(incident.service.name)
+        return {
+            "incident_id": incident.incident_id,
+            "summary": incident.summary,
+            "severity": incident.severity.value,
+            "status": incident.status.value,
+            "evidence": {
+                "logs": len(logs),
+                "alerts": len(alerts),
+                "deployments": len(deployments),
+            },
+            "recent_deployment": (
+                {
+                    "deployment_id": deployments[0].deployment_id,
+                    "version": deployments[0].version,
+                    "deployed_at": deployments[0].deployed_at.isoformat(),
+                }
+                if deployments
+                else None
+            ),
+        }
+
     def add_log(
         self,
         *,

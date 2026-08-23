@@ -48,3 +48,12 @@ def test_incident_api_endpoints_work() -> None:
     deployments_response = client.get("/services/payment-service/deployments")
     assert deployments_response.status_code == 200
     assert deployments_response.json() == []
+
+    investigation_response = client.get("/incidents/INC-3001/investigation")
+    assert investigation_response.status_code == 200
+    assert investigation_response.json()["evidence"] == {
+        "logs": 0,
+        "alerts": 0,
+        "deployments": 0,
+    }
+    assert investigation_response.json()["recent_deployment"] is None
