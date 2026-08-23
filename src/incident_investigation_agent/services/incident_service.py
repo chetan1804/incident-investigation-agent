@@ -56,6 +56,20 @@ class IncidentService:
         logs = self.get_logs(incident_id)
         alerts = self.get_alerts(incident_id)
         deployments = self.get_deployments(incident.service.name)
+        signals = [
+            f"alert:{alert.name} ({alert.severity})"
+            for alert in alerts
+        ]
+        signals.extend(
+            f"log:{log.level} {log.message}"
+            for log in logs
+            if log.level.upper() in {"ERROR", "CRITICAL", "FATAL"}
+        )
+        if deployments:
+            signals.append(
+                f"deployment:{deployments[0].deployment_id} ({deployments[0].version})"
+            )
+
         return {
             "incident_id": incident.incident_id,
             "summary": incident.summary,
@@ -66,6 +80,7 @@ class IncidentService:
                 "alerts": len(alerts),
                 "deployments": len(deployments),
             },
+            "signals": signals,
             "recent_deployment": (
                 {
                     "deployment_id": deployments[0].deployment_id,

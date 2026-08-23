@@ -54,6 +54,7 @@ def test_incident_service_creates_and_fetches_incident_data() -> None:
         logs = service.get_logs("INC-2001")
         alerts = service.get_alerts("INC-2001")
         deployments = service.get_deployments("payment-service")
+        investigation = service.investigate("INC-2001")
 
         assert incident is not None
         assert incident.title == "Checkout failures"
@@ -63,5 +64,11 @@ def test_incident_service_creates_and_fetches_incident_data() -> None:
         assert alerts[0].severity == "critical"
         assert len(deployments) == 1
         assert deployments[0].deployment_id == "DEPLOY-200"
+        assert investigation is not None
+        assert investigation["signals"] == [
+            "alert:error_rate_spike (critical)",
+            "log:ERROR Payment provider timeout",
+            "deployment:DEPLOY-200 (v3.9)",
+        ]
     finally:
         session.close()
