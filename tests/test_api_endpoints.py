@@ -70,3 +70,35 @@ def test_incident_api_endpoints_work() -> None:
         json={"service_name": "payment-service", "title": "Missing fields"},
     )
     assert invalid_response.status_code == 422
+
+
+def test_evidence_ingestion_feeds_investigation() -> None:
+    client = TestClient(app)
+    client.post(
+        "/incidents",
+        json={
+            "service_name": "orders-service",
+            "title": "Order failures",
+            "summary": "Orders are failing",
+            "incident_id": "INC-4001",
+        },
+    )
+
+    log_response = client.post(
+        "/logs",
+        json={"service_name": "orders-service", "message": "Database timeout", "level": "ERROR", "incident_id": "INC-4001"},
+    )
+    alert_response = client.post(
+        "/alerts",
+        json={"service_name": "orders-service", "name": "order_failure_rate", "incident_id": "INC-4001"},
+    )
+    deployment_response = client.post(
+        "/deployments",
+        json={"service_name": "orders-service", "deployment_id": "DEPLOY-400", "version": "v4.0"},
+    )
+
+    assert log_response.status_code == 200
+    assert alert_response.status_code == 200
+    assert deployment_response.status_code == 200
+    investigation = client.get("/incidents/INC-4001/investigation").json()
+    assert investigation["evidence"] == {"logs": 1, "alerts": 1, "deployments": 1}

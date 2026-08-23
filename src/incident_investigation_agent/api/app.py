@@ -3,7 +3,13 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI, HTTPException, Query
 
 from incident_investigation_agent.api.dependencies import get_incident_service
-from incident_investigation_agent.api.schemas import IncidentCreateRequest, IncidentResponse
+from incident_investigation_agent.api.schemas import (
+    AlertCreateRequest,
+    DeploymentCreateRequest,
+    IncidentCreateRequest,
+    IncidentResponse,
+    LogCreateRequest,
+)
 from incident_investigation_agent.models.incident_models import Alert, Deployment, Incident, LogEntry
 from incident_investigation_agent.services.incident_service import IncidentService
 
@@ -52,6 +58,38 @@ def create_incident(
         status=incident.status,
         service_name=incident.service.name,
     )
+
+
+@app.post("/logs")
+def create_log(
+    payload: LogCreateRequest,
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> dict:
+    log = incident_service.add_log(**payload.model_dump())
+    return {"id": log.id, "message": log.message, "level": log.level, "incident_id": payload.incident_id}
+
+
+@app.post("/alerts")
+def create_alert(
+    payload: AlertCreateRequest,
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> dict:
+    alert = incident_service.add_alert(**payload.model_dump())
+    return {"id": alert.id, "name": alert.name, "severity": alert.severity, "incident_id": payload.incident_id}
+
+
+@app.post("/deployments")
+def create_deployment(
+    payload: DeploymentCreateRequest,
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> dict:
+    deployment = incident_service.add_deployment(**payload.model_dump())
+    return {
+        "id": deployment.id,
+        "deployment_id": deployment.deployment_id,
+        "version": deployment.version,
+        "service_name": payload.service_name,
+    }
 
 
 @app.get("/incidents/{incident_id}")
