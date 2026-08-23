@@ -57,3 +57,9 @@ def test_incident_api_endpoints_work() -> None:
         "deployments": 0,
     }
     assert investigation_response.json()["recent_deployment"] is None
+
+    invalid_response = client.post(
+        "/incidents",
+        json={"service_name": "payment-service", "title": "Missing fields"},
+    )
+    assert invalid_response.status_code == 422

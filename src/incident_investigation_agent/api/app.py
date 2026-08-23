@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI, HTTPException
 
 from incident_investigation_agent.api.dependencies import get_incident_service
+from incident_investigation_agent.api.schemas import IncidentCreateRequest, IncidentResponse
 from incident_investigation_agent.models.incident_models import Alert, Deployment, Incident, LogEntry
 from incident_investigation_agent.services.incident_service import IncidentService
 
@@ -11,31 +12,27 @@ app = FastAPI(title="Incident Investigation Agent", version="0.1.0")
 
 @app.post("/incidents")
 def create_incident(
-    payload: dict,
+    payload: IncidentCreateRequest,
     incident_service: IncidentService = Depends(get_incident_service),
-) -> dict:
-    required_fields = {"service_name", "title", "summary", "incident_id"}
-    missing = sorted(required_fields - set(payload.keys()))
-    if missing:
-        raise HTTPException(status_code=400, detail=f"Missing required fields: {missing}")
+) -> IncidentResponse:
 
     incident = incident_service.create_incident(
-        service_name=payload["service_name"],
-        title=payload["title"],
-        summary=payload["summary"],
-        incident_id=payload["incident_id"],
-        severity=payload.get("severity", "medium"),
-        status=payload.get("status", "open"),
-        metadata_json=payload.get("metadata_json"),
+        service_name=payload.service_name,
+        title=payload.title,
+        summary=payload.summary,
+        incident_id=payload.incident_id,
+        severity=payload.severity.value,
+        status=payload.status.value,
+        metadata_json=payload.metadata_json,
     )
-    return {
-        "incident_id": incident.incident_id,
-        "title": incident.title,
-        "summary": incident.summary,
-        "severity": incident.severity.value,
-        "status": incident.status.value,
-        "service_name": incident.service.name,
-    }
+    return IncidentResponse(
+        incident_id=incident.incident_id,
+        title=incident.title,
+        summary=incident.summary,
+        severity=incident.severity,
+        status=incident.status,
+        service_name=incident.service.name,
+    )
 
 
 @app.get("/incidents/{incident_id}")
