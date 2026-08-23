@@ -33,6 +33,13 @@ def test_incident_api_endpoints_work() -> None:
     assert payload["incident_id"] == "INC-3001"
     assert payload["title"] == "Checkout failures"
 
+    list_response = client.get("/incidents")
+    assert list_response.status_code == 200
+    assert [item["incident_id"] for item in list_response.json()] == ["INC-3001"]
+
+    invalid_limit_response = client.get("/incidents?limit=0")
+    assert invalid_limit_response.status_code == 422
+
     logs_response = client.get("/incidents/INC-3001/logs")
     assert logs_response.status_code == 200
     assert logs_response.json() == []

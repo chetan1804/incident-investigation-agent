@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Query
 
 from incident_investigation_agent.api.dependencies import get_incident_service
 from incident_investigation_agent.api.schemas import IncidentCreateRequest, IncidentResponse
@@ -8,6 +8,25 @@ from incident_investigation_agent.models.incident_models import Alert, Deploymen
 from incident_investigation_agent.services.incident_service import IncidentService
 
 app = FastAPI(title="Incident Investigation Agent", version="0.1.0")
+
+
+@app.get("/incidents", response_model=list[IncidentResponse])
+def list_incidents(
+    limit: int = Query(default=50, ge=1, le=100),
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> list[IncidentResponse]:
+    incidents = incident_service.list_incidents(limit=limit)
+    return [
+        IncidentResponse(
+            incident_id=incident.incident_id,
+            title=incident.title,
+            summary=incident.summary,
+            severity=incident.severity,
+            status=incident.status,
+            service_name=incident.service.name,
+        )
+        for incident in incidents
+    ]
 
 
 @app.post("/incidents")
