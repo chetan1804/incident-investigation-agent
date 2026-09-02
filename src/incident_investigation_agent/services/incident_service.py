@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from incident_investigation_agent.models.incident_models import Alert, Deployment, Incident, LogEntry
@@ -23,6 +23,7 @@ class IncidentService:
         severity: str = "medium",
         status: str = "open",
         metadata_json: dict[str, Any] | None = None,
+        started_at: datetime | None = None,
     ) -> Incident:
         return self.repository.create_incident(
             service_name=service_name,
@@ -32,6 +33,7 @@ class IncidentService:
             severity=severity,
             status=status,
             metadata_json=metadata_json,
+            started_at=started_at,
         )
 
     def get_incident(self, incident_id: str) -> Incident | None:
@@ -49,39 +51,69 @@ class IncidentService:
     def get_deployments(self, service_name: str) -> list[Deployment]:
         return self.repository.get_deployments_for_service(service_name)
 
-    def investigate(self, incident_id: str) -> dict[str, Any] | None:
+    def investigate(
+        self,
+        incident_id: str,
+        *,
+        lookback_minutes: int = 60,
+        lookahead_minutes: int = 30,
+    ) -> dict[str, Any] | None:
         incident = self.get_incident(incident_id)
         if incident is None:
             return None
 
-        logs = self.get_logs(incident_id)
-        alerts = self.get_alerts(incident_id)
-        deployments = self.get_deployments(incident.service.name)
-        signals = [
-            f"alert:{alert.name} ({alert.severity})"
-            for alert in alerts
-        ]
+        started_at = self._as_utc(incident.started_at)
+        window_start = started_at - timedelta(minutes=lookback_minutes)
+        window_end = started_at + timedelta(minutes=lookahead_minutes)
+        logs = self.repository.get_logs_for_incident(
+            incident_id, window_start=window_start, window_end=window_end
+        )
+        alerts = self.repository.get_related_alerts(
+            incident_id, window_start=window_start, window_end=window_end
+        )
+        deployments = self.repository.get_deployments_for_service(
+            incident.service.name,
+            window_start=window_start,
+            window_end=started_at,
+        )
+
+        signals = [f"alert:{alert.name} ({alert.severity})" for alert in alerts]
         signals.extend(
-            f"log:{log.level} {log.message}"
-            for log in logs
-            if log.level.upper() in {"ERROR", "CRITICAL", "FATAL"}
+            f"log:{log.level} {log.message}" for log in logs if self._is_error_log(log)
         )
         if deployments:
-            signals.append(
-                f"deployment:{deployments[0].deployment_id} ({deployments[0].version})"
-            )
+            signals.append(f"deployment:{deployments[0].deployment_id} ({deployments[0].version})")
+
+        ranked_signals = self._rank_signals(
+            logs=logs,
+            alerts=alerts,
+            deployments=deployments,
+            started_at=started_at,
+            lookback_minutes=lookback_minutes,
+            lookahead_minutes=lookahead_minutes,
+        )
 
         return {
             "incident_id": incident.incident_id,
             "summary": incident.summary,
             "severity": incident.severity.value,
             "status": incident.status.value,
+            "scoring_method": "deterministic_v1",
+            "correlation_window": {
+                "started_at": started_at.isoformat(),
+                "window_start": window_start.isoformat(),
+                "window_end": window_end.isoformat(),
+                "lookback_minutes": lookback_minutes,
+                "lookahead_minutes": lookahead_minutes,
+            },
             "evidence": {
                 "logs": len(logs),
                 "alerts": len(alerts),
                 "deployments": len(deployments),
             },
             "signals": signals,
+            "ranked_signals": ranked_signals,
+            "root_cause_candidates": self._build_root_cause_candidates(ranked_signals),
             "recent_deployment": (
                 {
                     "deployment_id": deployments[0].deployment_id,
@@ -92,6 +124,119 @@ class IncidentService:
                 else None
             ),
         }
+
+    def _rank_signals(
+        self,
+        *,
+        logs: list[LogEntry],
+        alerts: list[Alert],
+        deployments: list[Deployment],
+        started_at: datetime,
+        lookback_minutes: int,
+        lookahead_minutes: int,
+    ) -> list[dict[str, Any]]:
+        ranked: list[dict[str, Any]] = []
+
+        alert_weights = {"critical": 1.0, "high": 0.9, "warning": 0.7, "medium": 0.65, "low": 0.4}
+        for alert in alerts:
+            proximity, timing = self._proximity(
+                alert.fired_at, started_at, lookback_minutes, lookahead_minutes
+            )
+            severity_weight = alert_weights.get(alert.severity.lower(), 0.55)
+            ranked.append(
+                {
+                    "signal_id": f"alert:{alert.id}",
+                    "kind": "alert",
+                    "description": f"{alert.name} ({alert.severity})",
+                    "observed_at": self._as_utc(alert.fired_at).isoformat(),
+                    "confidence": round(0.65 * severity_weight + 0.35 * proximity, 2),
+                    "reasoning": f"{alert.severity.title()} alert observed {timing} incident start.",
+                }
+            )
+
+        log_weights = {"ERROR": 0.8, "CRITICAL": 0.95, "FATAL": 1.0}
+        for log in logs:
+            level = log.level.upper()
+            if level not in log_weights:
+                continue
+            proximity, timing = self._proximity(
+                log.timestamp, started_at, lookback_minutes, lookahead_minutes
+            )
+            ranked.append(
+                {
+                    "signal_id": f"log:{log.id}",
+                    "kind": "log",
+                    "description": f"{level} {log.message}",
+                    "observed_at": self._as_utc(log.timestamp).isoformat(),
+                    "confidence": round(0.65 * log_weights[level] + 0.35 * proximity, 2),
+                    "reasoning": f"{level} log observed {timing} incident start.",
+                }
+            )
+
+        for deployment in deployments:
+            proximity, timing = self._proximity(
+                deployment.deployed_at, started_at, lookback_minutes, lookahead_minutes
+            )
+            ranked.append(
+                {
+                    "signal_id": f"deployment:{deployment.deployment_id}",
+                    "kind": "deployment",
+                    "description": f"{deployment.deployment_id} ({deployment.version})",
+                    "observed_at": self._as_utc(deployment.deployed_at).isoformat(),
+                    "confidence": round(0.6 + 0.35 * proximity, 2),
+                    "reasoning": f"Deployment completed {timing} incident start.",
+                }
+            )
+
+        return sorted(ranked, key=lambda signal: (-signal["confidence"], signal["observed_at"]))
+
+    @staticmethod
+    def _build_root_cause_candidates(ranked_signals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        templates = {
+            "deployment": "A recent deployment may have introduced the incident",
+            "log": "The failure recorded in application logs may be a direct contributor",
+            "alert": "The condition represented by the alert may be contributing to the incident",
+        }
+        candidates: list[dict[str, Any]] = []
+        seen_kinds: set[str] = set()
+        for signal in ranked_signals:
+            kind = signal["kind"]
+            if kind in seen_kinds:
+                continue
+            seen_kinds.add(kind)
+            candidates.append(
+                {
+                    "hypothesis": f"{templates[kind]}: {signal['description']}",
+                    "confidence": signal["confidence"],
+                    "supporting_signals": [signal["signal_id"]],
+                }
+            )
+        return candidates
+
+    @classmethod
+    def _proximity(
+        cls,
+        observed_at: datetime,
+        started_at: datetime,
+        lookback_minutes: int,
+        lookahead_minutes: int,
+    ) -> tuple[float, str]:
+        observed_at = cls._as_utc(observed_at)
+        delta_minutes = (observed_at - started_at).total_seconds() / 60
+        direction = "after" if delta_minutes > 0 else "before"
+        span = lookahead_minutes if delta_minutes > 0 else lookback_minutes
+        proximity = max(0.0, 1 - abs(delta_minutes) / max(span, 1))
+        return proximity, f"{abs(delta_minutes):.1f} minutes {direction}"
+
+    @staticmethod
+    def _as_utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    @staticmethod
+    def _is_error_log(log: LogEntry) -> bool:
+        return log.level.upper() in {"ERROR", "CRITICAL", "FATAL"}
 
     def add_log(
         self,

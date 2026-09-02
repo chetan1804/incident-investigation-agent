@@ -65,20 +65,37 @@ def test_evidence_ingestion_feeds_investigation(client: TestClient) -> None:
             "title": "Order failures",
             "summary": "Orders are failing",
             "incident_id": "INC-4001",
+            "started_at": "2026-08-22T12:00:00Z",
         },
     )
 
     log_response = client.post(
         "/logs",
-        json={"service_name": "orders-service", "message": "Database timeout", "level": "ERROR", "incident_id": "INC-4001"},
+        json={
+            "service_name": "orders-service",
+            "message": "Database timeout",
+            "level": "ERROR",
+            "incident_id": "INC-4001",
+            "timestamp": "2026-08-22T12:05:00Z",
+        },
     )
     alert_response = client.post(
         "/alerts",
-        json={"service_name": "orders-service", "name": "order_failure_rate", "incident_id": "INC-4001"},
+        json={
+            "service_name": "orders-service",
+            "name": "order_failure_rate",
+            "incident_id": "INC-4001",
+            "fired_at": "2026-08-22T12:02:00Z",
+        },
     )
     deployment_response = client.post(
         "/deployments",
-        json={"service_name": "orders-service", "deployment_id": "DEPLOY-400", "version": "v4.0"},
+        json={
+            "service_name": "orders-service",
+            "deployment_id": "DEPLOY-400",
+            "version": "v4.0",
+            "deployed_at": "2026-08-22T11:50:00Z",
+        },
     )
 
     assert log_response.status_code == 201
@@ -86,6 +103,13 @@ def test_evidence_ingestion_feeds_investigation(client: TestClient) -> None:
     assert deployment_response.status_code == 201
     investigation = client.get("/incidents/INC-4001/investigation").json()
     assert investigation["evidence"] == {"logs": 1, "alerts": 1, "deployments": 1}
+    assert investigation["correlation_window"]["lookback_minutes"] == 60
+    assert investigation["scoring_method"] == "deterministic_v1"
+    assert investigation["ranked_signals"]
+    assert investigation["root_cause_candidates"]
+    assert client.get(
+        "/incidents/INC-4001/investigation?lookback_minutes=0"
+    ).status_code == 422
 
 
 def test_evidence_rejects_unknown_incident_and_service_mismatch(client: TestClient) -> None:

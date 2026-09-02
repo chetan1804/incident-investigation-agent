@@ -16,6 +16,7 @@ class IncidentCreateRequest(BaseModel):
     severity: IncidentSeverity = IncidentSeverity.MEDIUM
     status: IncidentStatus = IncidentStatus.OPEN
     metadata_json: dict[str, Any] | None = None
+    started_at: datetime | None = None
 
 
 class IncidentResponse(BaseModel):
@@ -27,6 +28,56 @@ class IncidentResponse(BaseModel):
     severity: IncidentSeverity
     status: IncidentStatus
     service_name: str
+    started_at: datetime
+
+
+class EvidenceCounts(BaseModel):
+    logs: int
+    alerts: int
+    deployments: int
+
+
+class CorrelationWindowResponse(BaseModel):
+    started_at: datetime
+    window_start: datetime
+    window_end: datetime
+    lookback_minutes: int
+    lookahead_minutes: int
+
+
+class RankedSignalResponse(BaseModel):
+    signal_id: str
+    kind: str
+    description: str
+    observed_at: datetime
+    confidence: float = Field(ge=0, le=1)
+    reasoning: str
+
+
+class RootCauseCandidateResponse(BaseModel):
+    hypothesis: str
+    confidence: float = Field(ge=0, le=1)
+    supporting_signals: list[str]
+
+
+class RecentDeploymentResponse(BaseModel):
+    deployment_id: str
+    version: str
+    deployed_at: datetime
+
+
+class InvestigationResponse(BaseModel):
+    incident_id: str
+    summary: str
+    severity: IncidentSeverity
+    status: IncidentStatus
+    scoring_method: str
+    correlation_window: CorrelationWindowResponse
+    evidence: EvidenceCounts
+    signals: list[str]
+    ranked_signals: list[RankedSignalResponse]
+    root_cause_candidates: list[RootCauseCandidateResponse]
+    recent_deployment: RecentDeploymentResponse | None
 
 
 class LogCreateRequest(BaseModel):

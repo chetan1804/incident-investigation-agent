@@ -37,6 +37,7 @@ class IncidentRepository:
         severity: str = "medium",
         status: str = "open",
         metadata_json: dict | None = None,
+        started_at: datetime | None = None,
     ) -> Incident:
         if self.get_incident_by_id(incident_id) is not None:
             raise ResourceConflictError(f"Incident '{incident_id}' already exists")
@@ -50,6 +51,7 @@ class IncidentRepository:
             status=status,
             service_id=service.id,
             metadata_json=metadata_json,
+            **({"started_at": started_at} if started_at is not None else {}),
         )
         self.session.add(incident)
         self._commit_or_conflict(f"Incident '{incident_id}' already exists")
@@ -64,28 +66,61 @@ class IncidentRepository:
         statement = select(Incident).order_by(Incident.created_at.desc()).limit(limit)
         return list(self.session.scalars(statement).all())
 
-    def get_logs_for_incident(self, incident_id: str) -> list[LogEntry]:
+    def get_logs_for_incident(
+        self,
+        incident_id: str,
+        *,
+        window_start: datetime | None = None,
+        window_end: datetime | None = None,
+    ) -> list[LogEntry]:
         incident = self.get_incident_by_id(incident_id)
         if incident is None:
             return []
 
-        statement = select(LogEntry).where(LogEntry.incident_id == incident.id).order_by(LogEntry.timestamp.asc())
+        statement = select(LogEntry).where(LogEntry.incident_id == incident.id)
+        if window_start is not None:
+            statement = statement.where(LogEntry.timestamp >= window_start)
+        if window_end is not None:
+            statement = statement.where(LogEntry.timestamp <= window_end)
+        statement = statement.order_by(LogEntry.timestamp.asc())
         return list(self.session.scalars(statement).all())
 
-    def get_related_alerts(self, incident_id: str) -> list[Alert]:
+    def get_related_alerts(
+        self,
+        incident_id: str,
+        *,
+        window_start: datetime | None = None,
+        window_end: datetime | None = None,
+    ) -> list[Alert]:
         incident = self.get_incident_by_id(incident_id)
         if incident is None:
             return []
 
-        statement = select(Alert).where(Alert.incident_id == incident.id).order_by(Alert.fired_at.desc())
+        statement = select(Alert).where(Alert.incident_id == incident.id)
+        if window_start is not None:
+            statement = statement.where(Alert.fired_at >= window_start)
+        if window_end is not None:
+            statement = statement.where(Alert.fired_at <= window_end)
+        statement = statement.order_by(Alert.fired_at.desc())
         return list(self.session.scalars(statement).all())
 
-    def get_deployments_for_service(self, service_name: str) -> list[Deployment]:
+    def get_deployments_for_service(
+        self,
+        service_name: str,
+        *,
+        window_start: datetime | None = None,
+        window_end: datetime | None = None,
+    ) -> list[Deployment]:
         service = self.session.scalar(select(Service).where(Service.name == service_name))
         if service is None:
             return []
 
-        statement = select(Deployment).where(Deployment.service_id == service.id).order_by(Deployment.deployed_at.desc())
+        statement = select(Deployment).where(Deployment.service_id == service.id)
+        if window_start is not None:
+            statement = statement.where(Deployment.deployed_at >= window_start)
+        if window_end is not None:
+            statement = statement.where(Deployment.deployed_at <= window_end)
+        statement = statement.order_by(Deployment.deployed_at.desc())
         return list(self.session.scalars(statement).all())
 
     def create_log(

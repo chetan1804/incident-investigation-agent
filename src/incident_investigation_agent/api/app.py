@@ -9,8 +9,10 @@ from incident_investigation_agent.api.schemas import (
     DeploymentCreateRequest,
     IncidentCreateRequest,
     IncidentResponse,
+    InvestigationResponse,
     LogCreateRequest,
 )
+from incident_investigation_agent.config.settings import settings
 from incident_investigation_agent.exceptions import ResourceConflictError, ResourceNotFoundError
 from incident_investigation_agent.services.incident_service import IncidentService
 
@@ -41,6 +43,7 @@ def list_incidents(
             severity=incident.severity,
             status=incident.status,
             service_name=incident.service.name,
+            started_at=incident.started_at,
         )
         for incident in incidents
     ]
@@ -60,6 +63,7 @@ def create_incident(
         severity=payload.severity.value,
         status=payload.status.value,
         metadata_json=payload.metadata_json,
+        started_at=payload.started_at,
     )
     return IncidentResponse(
         incident_id=incident.incident_id,
@@ -68,6 +72,7 @@ def create_incident(
         severity=incident.severity,
         status=incident.status,
         service_name=incident.service.name,
+        started_at=incident.started_at,
     )
 
 
@@ -103,7 +108,7 @@ def create_deployment(
     }
 
 
-@app.get("/incidents/{incident_id}")
+@app.get("/incidents/{incident_id}", response_model=IncidentResponse)
 def get_incident(
     incident_id: str,
     incident_service: IncidentService = Depends(get_incident_service),
@@ -119,6 +124,7 @@ def get_incident(
         "severity": incident.severity.value,
         "status": incident.status.value,
         "service_name": incident.service.name,
+        "started_at": incident.started_at,
     }
 
 
@@ -162,12 +168,18 @@ def get_incident_alerts(
     ]
 
 
-@app.get("/incidents/{incident_id}/investigation")
+@app.get("/incidents/{incident_id}/investigation", response_model=InvestigationResponse)
 def investigate_incident(
     incident_id: str,
+    lookback_minutes: int = Query(default=settings.correlation_lookback_minutes, ge=1, le=1440),
+    lookahead_minutes: int = Query(default=settings.correlation_lookahead_minutes, ge=0, le=1440),
     incident_service: IncidentService = Depends(get_incident_service),
 ) -> dict:
-    investigation = incident_service.investigate(incident_id)
+    investigation = incident_service.investigate(
+        incident_id,
+        lookback_minutes=lookback_minutes,
+        lookahead_minutes=lookahead_minutes,
+    )
     if investigation is None:
         raise HTTPException(status_code=404, detail="Incident not found")
     return investigation

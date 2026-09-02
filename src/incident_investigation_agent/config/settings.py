@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
     api_port: int = Field(default=8000)
     database_url: str = Field(default="sqlite:///./incident_investigation_agent.db")
+    correlation_lookback_minutes: int = Field(default=60, ge=1, le=1440)
+    correlation_lookahead_minutes: int = Field(default=30, ge=0, le=1440)
 
 
 settings = Settings()

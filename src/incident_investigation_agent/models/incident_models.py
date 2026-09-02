@@ -62,6 +62,7 @@ class Incident(Base):
         SAEnum(IncidentStatus), default=IncidentStatus.OPEN, nullable=False
     )
     service_id: Mapped[int] = mapped_column(ForeignKey("services.id"), nullable=False, index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now

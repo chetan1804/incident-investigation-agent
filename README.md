@@ -11,7 +11,8 @@ Build an agentic AI system that helps engineers investigate production incidents
 - Create and retrieve incidents.
 - Ingest logs, alerts, and deployments with optional source timestamps.
 - Reject evidence linked to missing incidents or the wrong service.
-- Generate a deterministic summary of correlated evidence.
+- Correlate evidence within configurable incident time windows.
+- Rank signals and generate deterministic root-cause candidates with confidence scores.
 - Manage schema changes with Alembic migrations.
 
 ## Structure
@@ -49,7 +50,7 @@ cp .env.example .env
 
 ## Database migrations
 
-For a new database, run `alembic upgrade head`. If you already have a database created by an earlier version of this project, back it up and run `alembic stamp head` once to mark its existing schema as the baseline.
+For a new database, run `alembic upgrade head`. If you have the legacy database created before migrations were introduced, back it up, run `alembic stamp 20260822_0001`, and then run `alembic upgrade head`.
 
 Create future migrations with:
 
@@ -60,6 +61,18 @@ alembic upgrade head
 
 Tests use a separate temporary SQLite database and never modify the configured application database.
 
+## Investigation correlation
+
+An incident's `started_at` value anchors its evidence window. The default window includes evidence from 60 minutes before through 30 minutes after that timestamp. Deployments are only considered through the incident start, so a later deployment is not presented as a possible cause.
+
+Override the window per investigation request:
+
+```text
+GET /incidents/INC-4001/investigation?lookback_minutes=120&lookahead_minutes=45
+```
+
+The defaults can be changed with `CORRELATION_LOOKBACK_MINUTES` and `CORRELATION_LOOKAHEAD_MINUTES`. Confidence values currently use the transparent `deterministic_v1` severity-and-proximity heuristic; they are ranking scores, not statistically calibrated probabilities.
+
 ## Next step
 
-Add incident time windows and rank evidence by temporal proximity before introducing AI-generated root-cause hypotheses and remediation suggestions.
+Introduce AI-generated root-cause hypotheses and remediation suggestions grounded in the ranked evidence.
