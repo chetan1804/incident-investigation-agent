@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -35,6 +36,7 @@ class LogCreateRequest(BaseModel):
     incident_id: str | None = Field(default=None, max_length=64)
     trace_id: str | None = Field(default=None, max_length=128)
     metadata_json: dict[str, Any] | None = None
+    timestamp: datetime | None = None
 
 
 class AlertCreateRequest(BaseModel):
@@ -43,6 +45,7 @@ class AlertCreateRequest(BaseModel):
     severity: str = Field(default="warning", min_length=1, max_length=32)
     description: str | None = None
     incident_id: str | None = Field(default=None, max_length=64)
+    fired_at: datetime | None = None
 
 
 class DeploymentCreateRequest(BaseModel):
@@ -53,3 +56,4 @@ class DeploymentCreateRequest(BaseModel):
     status: str = Field(default="success", min_length=1, max_length=32)
     notes: str | None = None
     metadata_json: dict[str, Any] | None = None
+    deployed_at: datetime | None = None

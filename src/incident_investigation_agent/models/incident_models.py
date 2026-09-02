@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
@@ -8,6 +8,11 @@ from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from incident_investigation_agent.database.base import Base
+
+
+def utc_now() -> datetime:
+    """Return a timezone-aware UTC timestamp for database defaults."""
+    return datetime.now(UTC)
 
 
 class IncidentSeverity(str, Enum):
@@ -33,7 +38,7 @@ class Service(Base):
     name: Mapped[str] = mapped_column(String(255), unique=True, index=True, nullable=False)
     environment: Mapped[str] = mapped_column(String(64), default="production")
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     incidents: Mapped[list["Incident"]] = relationship(back_populates="service")
     deployments: Mapped[list["Deployment"]] = relationship(back_populates="service")
@@ -57,9 +62,9 @@ class Incident(Base):
         SAEnum(IncidentStatus), default=IncidentStatus.OPEN, nullable=False
     )
     service_id: Mapped[int] = mapped_column(ForeignKey("services.id"), nullable=False, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
@@ -76,7 +81,7 @@ class LogEntry(Base):
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     service_id: Mapped[int] = mapped_column(ForeignKey("services.id"), nullable=False, index=True)
     incident_id: Mapped[int | None] = mapped_column(ForeignKey("incidents.id"), nullable=True, index=True)
-    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
     level: Mapped[str] = mapped_column(String(20), default="INFO")
     message: Mapped[str] = mapped_column(Text, nullable=False)
     trace_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -96,7 +101,7 @@ class Deployment(Base):
     deployment_id: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
     version: Mapped[str] = mapped_column(String(64), nullable=False)
     environment: Mapped[str] = mapped_column(String(64), default="production")
-    deployed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    deployed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
     status: Mapped[str] = mapped_column(String(32), default="success")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
@@ -114,7 +119,7 @@ class Alert(Base):
     incident_id: Mapped[int | None] = mapped_column(ForeignKey("incidents.id"), nullable=True, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     severity: Mapped[str] = mapped_column(String(32), default="warning")
-    fired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow, index=True)
+    fired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
     status: Mapped[str] = mapped_column(String(32), default="active")
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
 

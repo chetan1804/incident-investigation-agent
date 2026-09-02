@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi.responses import JSONResponse
 
 from incident_investigation_agent.api.dependencies import get_incident_service
 from incident_investigation_agent.api.schemas import (
@@ -10,10 +11,20 @@ from incident_investigation_agent.api.schemas import (
     IncidentResponse,
     LogCreateRequest,
 )
-from incident_investigation_agent.models.incident_models import Alert, Deployment, Incident, LogEntry
+from incident_investigation_agent.exceptions import ResourceConflictError, ResourceNotFoundError
 from incident_investigation_agent.services.incident_service import IncidentService
 
 app = FastAPI(title="Incident Investigation Agent", version="0.1.0")
+
+
+@app.exception_handler(ResourceNotFoundError)
+def handle_not_found(_request: Request, exc: ResourceNotFoundError) -> JSONResponse:
+    return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(exc)})
+
+
+@app.exception_handler(ResourceConflictError)
+def handle_conflict(_request: Request, exc: ResourceConflictError) -> JSONResponse:
+    return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
 
 
 @app.get("/incidents", response_model=list[IncidentResponse])
@@ -35,7 +46,7 @@ def list_incidents(
     ]
 
 
-@app.post("/incidents")
+@app.post("/incidents", status_code=status.HTTP_201_CREATED)
 def create_incident(
     payload: IncidentCreateRequest,
     incident_service: IncidentService = Depends(get_incident_service),
@@ -60,7 +71,7 @@ def create_incident(
     )
 
 
-@app.post("/logs")
+@app.post("/logs", status_code=status.HTTP_201_CREATED)
 def create_log(
     payload: LogCreateRequest,
     incident_service: IncidentService = Depends(get_incident_service),
@@ -69,7 +80,7 @@ def create_log(
     return {"id": log.id, "message": log.message, "level": log.level, "incident_id": payload.incident_id}
 
 
-@app.post("/alerts")
+@app.post("/alerts", status_code=status.HTTP_201_CREATED)
 def create_alert(
     payload: AlertCreateRequest,
     incident_service: IncidentService = Depends(get_incident_service),
@@ -78,7 +89,7 @@ def create_alert(
     return {"id": alert.id, "name": alert.name, "severity": alert.severity, "incident_id": payload.incident_id}
 
 
-@app.post("/deployments")
+@app.post("/deployments", status_code=status.HTTP_201_CREATED)
 def create_deployment(
     payload: DeploymentCreateRequest,
     incident_service: IncidentService = Depends(get_incident_service),
@@ -116,6 +127,8 @@ def get_incident_logs(
     incident_id: str,
     incident_service: IncidentService = Depends(get_incident_service),
 ) -> list[dict]:
+    if incident_service.get_incident(incident_id) is None:
+        raise ResourceNotFoundError(f"Incident '{incident_id}' was not found")
     logs = incident_service.get_logs(incident_id)
     return [
         {
@@ -134,6 +147,8 @@ def get_incident_alerts(
     incident_id: str,
     incident_service: IncidentService = Depends(get_incident_service),
 ) -> list[dict]:
+    if incident_service.get_incident(incident_id) is None:
+        raise ResourceNotFoundError(f"Incident '{incident_id}' was not found")
     alerts = incident_service.get_alerts(incident_id)
     return [
         {

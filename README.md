@@ -1,14 +1,18 @@
 # Incident Investigation Agent
 
-A minimal starting point for an incident investigation platform. This repository begins with a clean project skeleton, centralized settings, and a simple verification flow before any database or AI components are added.
+A FastAPI backend for ingesting incident evidence and producing deterministic investigation summaries.
 
 ## Project goal
 
 Build an agentic AI system that helps engineers investigate production incidents by correlating alerts, logs, deployments, service dependencies, and historical evidence.
 
-## Current step
+## Current capabilities
 
-This repository is intentionally minimal and focuses on the foundation only.
+- Create and retrieve incidents.
+- Ingest logs, alerts, and deployments with optional source timestamps.
+- Reject evidence linked to missing incidents or the wrong service.
+- Generate a deterministic summary of correlated evidence.
+- Manage schema changes with Alembic migrations.
 
 ## Structure
 
@@ -28,8 +32,12 @@ This repository is intentionally minimal and focuses on the foundation only.
    `python -m pip install -r requirements.txt`
 4. Run the setup verification script:
    `python scripts/verify_setup.py`
-5. Run tests:
+5. Create or upgrade the database:
+   `alembic upgrade head`
+6. Run tests:
    `pytest -q`
+7. Start the API:
+   `uvicorn --app-dir src incident_investigation_agent.api.app:app --reload`
 
 ## Configuration
 
@@ -39,6 +47,19 @@ Environment variables are centralized in the application settings module. Copy t
 cp .env.example .env
 ```
 
+## Database migrations
+
+For a new database, run `alembic upgrade head`. If you already have a database created by an earlier version of this project, back it up and run `alembic stamp head` once to mark its existing schema as the baseline.
+
+Create future migrations with:
+
+```bash
+alembic revision --autogenerate -m "describe the schema change"
+alembic upgrade head
+```
+
+Tests use a separate temporary SQLite database and never modify the configured application database.
+
 ## Next step
 
-The next step is database design and the core incident models.
+Add incident time windows and rank evidence by temporal proximity before introducing AI-generated root-cause hypotheses and remediation suggestions.

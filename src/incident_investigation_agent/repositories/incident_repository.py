@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from incident_investigation_agent.exceptions import ResourceConflictError, ResourceNotFoundError
 from incident_investigation_agent.models.incident_models import Alert, Deployment, Incident, LogEntry, Service
 
 
@@ -34,6 +38,9 @@ class IncidentRepository:
         status: str = "open",
         metadata_json: dict | None = None,
     ) -> Incident:
+        if self.get_incident_by_id(incident_id) is not None:
+            raise ResourceConflictError(f"Incident '{incident_id}' already exists")
+
         service = self.create_service(name=service_name)
         incident = Incident(
             incident_id=incident_id,
@@ -45,7 +52,7 @@ class IncidentRepository:
             metadata_json=metadata_json,
         )
         self.session.add(incident)
-        self.session.commit()
+        self._commit_or_conflict(f"Incident '{incident_id}' already exists")
         self.session.refresh(incident)
         return incident
 
@@ -90,11 +97,9 @@ class IncidentRepository:
         incident_id: str | None = None,
         trace_id: str | None = None,
         metadata_json: dict | None = None,
+        timestamp: datetime | None = None,
     ) -> LogEntry:
-        service = self.create_service(name=service_name)
-        incident: Incident | None = None
-        if incident_id is not None:
-            incident = self.get_incident_by_id(incident_id)
+        service, incident = self._resolve_evidence_context(service_name, incident_id)
 
         log_entry = LogEntry(
             service_id=service.id,
@@ -103,6 +108,7 @@ class IncidentRepository:
             message=message,
             trace_id=trace_id,
             metadata_json=metadata_json,
+            **({"timestamp": timestamp} if timestamp is not None else {}),
         )
         self.session.add(log_entry)
         self.session.commit()
@@ -117,11 +123,9 @@ class IncidentRepository:
         severity: str = "warning",
         description: str | None = None,
         incident_id: str | None = None,
+        fired_at: datetime | None = None,
     ) -> Alert:
-        service = self.create_service(name=service_name)
-        incident: Incident | None = None
-        if incident_id is not None:
-            incident = self.get_incident_by_id(incident_id)
+        service, incident = self._resolve_evidence_context(service_name, incident_id)
 
         alert = Alert(
             service_id=service.id,
@@ -129,6 +133,7 @@ class IncidentRepository:
             name=name,
             severity=severity,
             description=description,
+            **({"fired_at": fired_at} if fired_at is not None else {}),
         )
         self.session.add(alert)
         self.session.commit()
@@ -145,7 +150,12 @@ class IncidentRepository:
         status: str = "success",
         notes: str | None = None,
         metadata_json: dict | None = None,
+        deployed_at: datetime | None = None,
     ) -> Deployment:
+        existing = self.session.scalar(select(Deployment).where(Deployment.deployment_id == deployment_id))
+        if existing is not None:
+            raise ResourceConflictError(f"Deployment '{deployment_id}' already exists")
+
         service = self.create_service(name=service_name)
         deployment = Deployment(
             service_id=service.id,
@@ -155,8 +165,31 @@ class IncidentRepository:
             status=status,
             notes=notes,
             metadata_json=metadata_json,
+            **({"deployed_at": deployed_at} if deployed_at is not None else {}),
         )
         self.session.add(deployment)
-        self.session.commit()
+        self._commit_or_conflict(f"Deployment '{deployment_id}' already exists")
         self.session.refresh(deployment)
         return deployment
+
+    def _resolve_evidence_context(
+        self, service_name: str, incident_id: str | None
+    ) -> tuple[Service, Incident | None]:
+        if incident_id is None:
+            return self.create_service(name=service_name), None
+
+        incident = self.get_incident_by_id(incident_id)
+        if incident is None:
+            raise ResourceNotFoundError(f"Incident '{incident_id}' was not found")
+        if incident.service.name != service_name:
+            raise ResourceConflictError(
+                f"Incident '{incident_id}' belongs to service '{incident.service.name}', not '{service_name}'"
+            )
+        return incident.service, incident
+
+    def _commit_or_conflict(self, message: str) -> None:
+        try:
+            self.session.commit()
+        except IntegrityError as exc:
+            self.session.rollback()
+            raise ResourceConflictError(message) from exc

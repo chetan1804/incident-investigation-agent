@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from incident_investigation_agent.models.incident_models import Alert, Deployment, Incident, LogEntry
@@ -101,6 +102,7 @@ class IncidentService:
         incident_id: str | None = None,
         trace_id: str | None = None,
         metadata_json: dict[str, Any] | None = None,
+        timestamp: datetime | None = None,
     ) -> LogEntry:
         return self.repository.create_log(
             service_name=service_name,
@@ -109,6 +111,7 @@ class IncidentService:
             incident_id=incident_id,
             trace_id=trace_id,
             metadata_json=metadata_json,
+            timestamp=timestamp,
         )
 
     def add_alert(
@@ -119,6 +122,7 @@ class IncidentService:
         severity: str = "warning",
         description: str | None = None,
         incident_id: str | None = None,
+        fired_at: datetime | None = None,
     ) -> Alert:
         return self.repository.create_alert(
             service_name=service_name,
@@ -126,6 +130,7 @@ class IncidentService:
             severity=severity,
             description=description,
             incident_id=incident_id,
+            fired_at=fired_at,
         )
 
     def add_deployment(
@@ -138,6 +143,7 @@ class IncidentService:
         status: str = "success",
         notes: str | None = None,
         metadata_json: dict[str, Any] | None = None,
+        deployed_at: datetime | None = None,
     ) -> Deployment:
         return self.repository.create_deployment(
             service_name=service_name,
@@ -147,4 +153,5 @@ class IncidentService:
             status=status,
             notes=notes,
             metadata_json=metadata_json,
+            deployed_at=deployed_at,
         )

@@ -15,6 +15,9 @@ ENV/
 .env.*
 !.env.example
 
+# Local databases
+*.db
+
 # Test and coverage
 .pytest_cache/
 .coverage
