@@ -2,6 +2,8 @@
 
 from incident_investigation_agent.models.incident_models import (
     Alert,
+    AIAnalysisFeedback,
+    AIAnalysisRecord,
     Deployment,
     Incident,
     IncidentSeverity,
@@ -12,6 +14,8 @@ from incident_investigation_agent.models.incident_models import (
 
 __all__ = [
     "Alert",
+    "AIAnalysisFeedback",
+    "AIAnalysisRecord",
     "Deployment",
     "Incident",
     "IncidentSeverity",

@@ -5,6 +5,8 @@ from fastapi.responses import JSONResponse
 
 from incident_investigation_agent.api.dependencies import get_hypothesis_generator, get_incident_service
 from incident_investigation_agent.api.schemas import (
+    AIAnalysisFeedbackCreateRequest,
+    AIAnalysisFeedbackResponse,
     AIAnalysisResponse,
     AlertCreateRequest,
     DeploymentCreateRequest,
@@ -17,9 +19,11 @@ from incident_investigation_agent.config.settings import settings
 from incident_investigation_agent.exceptions import (
     AIAnalysisError,
     AIAnalysisUnavailableError,
+    InvalidFeedbackError,
     ResourceConflictError,
     ResourceNotFoundError,
 )
+from incident_investigation_agent.models.incident_models import AIAnalysisRecord
 from incident_investigation_agent.services.ai_analysis_service import HypothesisGenerator
 from incident_investigation_agent.services.incident_service import IncidentService
 
@@ -44,6 +48,38 @@ def handle_ai_unavailable(_request: Request, exc: AIAnalysisUnavailableError) ->
 @app.exception_handler(AIAnalysisError)
 def handle_ai_error(_request: Request, exc: AIAnalysisError) -> JSONResponse:
     return JSONResponse(status_code=status.HTTP_502_BAD_GATEWAY, content={"detail": str(exc)})
+
+
+@app.exception_handler(InvalidFeedbackError)
+def handle_invalid_feedback(_request: Request, exc: InvalidFeedbackError) -> JSONResponse:
+    return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content={"detail": str(exc)})
+
+
+def _serialize_ai_analysis(record: AIAnalysisRecord) -> dict:
+    return {
+        "analysis_id": record.analysis_id,
+        "incident_id": record.incident.incident_id,
+        "model": record.model,
+        "prompt_version": record.prompt_version,
+        "prompt_sha256": record.prompt_sha256,
+        "correlation_window": record.correlation_window_json,
+        "ranked_signal_ids": record.ranked_signal_ids_json,
+        "hypotheses": record.hypotheses_json,
+        "remediation_suggestions": record.remediation_suggestions_json,
+        "feedback": [
+            {
+                "feedback_id": item.feedback_id,
+                "analysis_id": record.analysis_id,
+                "hypothesis_index": item.hypothesis_index,
+                "rating": item.rating,
+                "operator_name": item.operator_name,
+                "comment": item.comment,
+                "created_at": item.created_at,
+            }
+            for item in sorted(record.feedback, key=lambda feedback: feedback.created_at)
+        ],
+        "created_at": record.created_at,
+    }
 
 
 @app.get("/incidents", response_model=list[IncidentResponse])
@@ -202,7 +238,11 @@ def investigate_incident(
     return investigation
 
 
-@app.post("/incidents/{incident_id}/ai-analysis", response_model=AIAnalysisResponse)
+@app.post(
+    "/incidents/{incident_id}/ai-analysis",
+    response_model=AIAnalysisResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 def analyze_incident_with_ai(
     incident_id: str,
     lookback_minutes: int = Query(default=settings.correlation_lookback_minutes, ge=1, le=1440),
@@ -225,10 +265,56 @@ def analyze_incident_with_ai(
         severity=investigation["severity"],
         ranked_signals=ranked_signals,
     )
+    record = incident_service.save_ai_analysis(
+        incident_id=incident_id,
+        model=hypothesis_generator.model,
+        prompt_version=hypothesis_generator.prompt_version,
+        prompt_sha256=hypothesis_generator.prompt_sha256,
+        correlation_window=investigation["correlation_window"],
+        ranked_signal_ids=[signal["signal_id"] for signal in ranked_signals],
+        hypotheses=[item.model_dump() for item in analysis.hypotheses],
+        remediation_suggestions=[
+            item.model_dump() for item in analysis.remediation_suggestions
+        ],
+    )
+    return _serialize_ai_analysis(record)
+
+
+@app.get("/incidents/{incident_id}/ai-analyses", response_model=list[AIAnalysisResponse])
+def list_ai_analyses(
+    incident_id: str,
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> list[dict]:
+    if incident_service.get_incident(incident_id) is None:
+        raise ResourceNotFoundError(f"Incident '{incident_id}' was not found")
+    return [
+        _serialize_ai_analysis(record)
+        for record in incident_service.list_ai_analyses(incident_id)
+    ]
+
+
+@app.post(
+    "/ai-analyses/{analysis_id}/feedback",
+    response_model=AIAnalysisFeedbackResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_ai_analysis_feedback(
+    analysis_id: str,
+    payload: AIAnalysisFeedbackCreateRequest,
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> dict:
+    feedback = incident_service.add_ai_analysis_feedback(
+        analysis_id=analysis_id,
+        **payload.model_dump(),
+    )
     return {
-        "incident_id": incident_id,
-        "model": hypothesis_generator.model,
-        **analysis.model_dump(),
+        "feedback_id": feedback.feedback_id,
+        "analysis_id": analysis_id,
+        "hypothesis_index": feedback.hypothesis_index,
+        "rating": feedback.rating,
+        "operator_name": feedback.operator_name,
+        "comment": feedback.comment,
+        "created_at": feedback.created_at,
     }
 
 

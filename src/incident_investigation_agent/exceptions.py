@@ -16,3 +16,7 @@ class AIAnalysisUnavailableError(IncidentInvestigationError):
 
 class AIAnalysisError(IncidentInvestigationError):
     """Raised when an AI provider returns unusable analysis."""
+
+
+class InvalidFeedbackError(IncidentInvestigationError):
+    """Raised when feedback does not reference a hypothesis in an analysis."""

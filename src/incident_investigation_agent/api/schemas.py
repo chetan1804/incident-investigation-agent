@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -95,10 +95,34 @@ class RemediationSuggestionResponse(BaseModel):
 
 
 class AIAnalysisResponse(BaseModel):
+    analysis_id: str
     incident_id: str
     model: str
+    prompt_version: str
+    prompt_sha256: str
+    correlation_window: CorrelationWindowResponse
+    ranked_signal_ids: list[str]
     hypotheses: list[AIHypothesisResponse]
     remediation_suggestions: list[RemediationSuggestionResponse]
+    feedback: list["AIAnalysisFeedbackResponse"]
+    created_at: datetime
+
+
+class AIAnalysisFeedbackCreateRequest(BaseModel):
+    hypothesis_index: int = Field(ge=0)
+    rating: Literal["accurate", "partially_accurate", "inaccurate", "uncertain"]
+    operator_name: str = Field(min_length=1, max_length=255)
+    comment: str | None = Field(default=None, max_length=2000)
+
+
+class AIAnalysisFeedbackResponse(BaseModel):
+    feedback_id: str
+    analysis_id: str
+    hypothesis_index: int
+    rating: str
+    operator_name: str
+    comment: str | None
+    created_at: datetime
 
 
 class LogCreateRequest(BaseModel):

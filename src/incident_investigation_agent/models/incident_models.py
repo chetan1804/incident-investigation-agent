@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, JSON, String, Text
+from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from incident_investigation_agent.database.base import Base
@@ -72,6 +72,7 @@ class Incident(Base):
     service: Mapped[Service] = relationship(back_populates="incidents")
     logs: Mapped[list["LogEntry"]] = relationship(back_populates="incident")
     alerts: Mapped[list["Alert"]] = relationship(back_populates="incident")
+    ai_analyses: Mapped[list["AIAnalysisRecord"]] = relationship(back_populates="incident")
 
 
 class LogEntry(Base):
@@ -126,3 +127,43 @@ class Alert(Base):
 
     service: Mapped[Service] = relationship(back_populates="alerts")
     incident: Mapped[Incident | None] = relationship(back_populates="alerts")
+
+
+class AIAnalysisRecord(Base):
+    """An immutable snapshot of generated analysis and the evidence used for it."""
+
+    __tablename__ = "ai_analyses"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    analysis_id: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    incident_id: Mapped[int] = mapped_column(ForeignKey("incidents.id"), nullable=False, index=True)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    prompt_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    correlation_window_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    ranked_signal_ids_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    hypotheses_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    remediation_suggestions_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+    incident: Mapped[Incident] = relationship(back_populates="ai_analyses")
+    feedback: Mapped[list["AIAnalysisFeedback"]] = relationship(
+        back_populates="analysis", cascade="all, delete-orphan"
+    )
+
+
+class AIAnalysisFeedback(Base):
+    """An operator assessment of one hypothesis in a persisted analysis."""
+
+    __tablename__ = "ai_analysis_feedback"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    feedback_id: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    analysis_id: Mapped[int] = mapped_column(ForeignKey("ai_analyses.id"), nullable=False, index=True)
+    hypothesis_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    rating: Mapped[str] = mapped_column(String(32), nullable=False)
+    operator_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+    analysis: Mapped[AIAnalysisRecord] = relationship(back_populates="feedback")

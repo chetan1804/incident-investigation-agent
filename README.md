@@ -14,6 +14,7 @@ Build an agentic AI system that helps engineers investigate production incidents
 - Correlate evidence within configurable incident time windows.
 - Rank signals and generate deterministic root-cause candidates with confidence scores.
 - Generate structured AI hypotheses and remediation suggestions grounded in ranked signals.
+- Persist AI analysis snapshots and collect hypothesis-level operator feedback.
 - Manage schema changes with Alembic migrations.
 
 ## Structure
@@ -84,8 +85,29 @@ Request analysis after ingesting evidence:
 POST /incidents/INC-4001/ai-analysis?lookback_minutes=120&lookahead_minutes=45
 ```
 
+Each successful response is persisted with its model, prompt version and SHA-256 hash, correlation window, cited signal IDs, and generated output. Retrieve an incident's analysis history with:
+
+```text
+GET /incidents/INC-4001/ai-analyses
+```
+
+Record an operator assessment against a zero-based hypothesis index:
+
+```text
+POST /ai-analyses/AIA-.../feedback
+
+{
+  "hypothesis_index": 0,
+  "rating": "accurate",
+  "operator_name": "on-call-engineer",
+  "comment": "Rollback restored service health."
+}
+```
+
+Allowed ratings are `accurate`, `partially_accurate`, `inaccurate`, and `uncertain`.
+
 The existing `GET /incidents/{incident_id}/investigation` remains deterministic and does not require an API key. AI confidence values are model judgments, not calibrated probabilities, and remediation suggestions should be reviewed by an operator before execution.
 
 ## Next step
 
-Persist AI analyses with prompt/model metadata and capture operator feedback on hypothesis quality.
+Aggregate operator feedback into evaluation metrics and add regression datasets for prompt changes.

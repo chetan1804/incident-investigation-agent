@@ -3,7 +3,14 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from incident_investigation_agent.models.incident_models import Alert, Deployment, Incident, LogEntry
+from incident_investigation_agent.models.incident_models import (
+    AIAnalysisFeedback,
+    AIAnalysisRecord,
+    Alert,
+    Deployment,
+    Incident,
+    LogEntry,
+)
 from incident_investigation_agent.repositories.incident_repository import IncidentRepository
 
 
@@ -50,6 +57,52 @@ class IncidentService:
 
     def get_deployments(self, service_name: str) -> list[Deployment]:
         return self.repository.get_deployments_for_service(service_name)
+
+    def save_ai_analysis(
+        self,
+        *,
+        incident_id: str,
+        model: str,
+        prompt_version: str,
+        prompt_sha256: str,
+        correlation_window: dict[str, Any],
+        ranked_signal_ids: list[str],
+        hypotheses: list[dict[str, Any]],
+        remediation_suggestions: list[dict[str, Any]],
+    ) -> AIAnalysisRecord:
+        return self.repository.create_ai_analysis(
+            incident_id=incident_id,
+            model=model,
+            prompt_version=prompt_version,
+            prompt_sha256=prompt_sha256,
+            correlation_window_json=correlation_window,
+            ranked_signal_ids_json=ranked_signal_ids,
+            hypotheses_json=hypotheses,
+            remediation_suggestions_json=remediation_suggestions,
+        )
+
+    def get_ai_analysis(self, analysis_id: str) -> AIAnalysisRecord | None:
+        return self.repository.get_ai_analysis(analysis_id)
+
+    def list_ai_analyses(self, incident_id: str) -> list[AIAnalysisRecord]:
+        return self.repository.list_ai_analyses(incident_id)
+
+    def add_ai_analysis_feedback(
+        self,
+        *,
+        analysis_id: str,
+        hypothesis_index: int,
+        rating: str,
+        operator_name: str,
+        comment: str | None = None,
+    ) -> AIAnalysisFeedback:
+        return self.repository.create_ai_analysis_feedback(
+            analysis_id=analysis_id,
+            hypothesis_index=hypothesis_index,
+            rating=rating,
+            operator_name=operator_name,
+            comment=comment,
+        )
 
     def investigate(
         self,

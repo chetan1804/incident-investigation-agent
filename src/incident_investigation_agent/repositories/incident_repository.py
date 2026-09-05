@@ -1,13 +1,26 @@
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from incident_investigation_agent.exceptions import ResourceConflictError, ResourceNotFoundError
-from incident_investigation_agent.models.incident_models import Alert, Deployment, Incident, LogEntry, Service
+from incident_investigation_agent.exceptions import (
+    InvalidFeedbackError,
+    ResourceConflictError,
+    ResourceNotFoundError,
+)
+from incident_investigation_agent.models.incident_models import (
+    AIAnalysisFeedback,
+    AIAnalysisRecord,
+    Alert,
+    Deployment,
+    Incident,
+    LogEntry,
+    Service,
+)
 
 
 class IncidentRepository:
@@ -206,6 +219,84 @@ class IncidentRepository:
         self._commit_or_conflict(f"Deployment '{deployment_id}' already exists")
         self.session.refresh(deployment)
         return deployment
+
+    def create_ai_analysis(
+        self,
+        *,
+        incident_id: str,
+        model: str,
+        prompt_version: str,
+        prompt_sha256: str,
+        correlation_window_json: dict,
+        ranked_signal_ids_json: list[str],
+        hypotheses_json: list[dict],
+        remediation_suggestions_json: list[dict],
+    ) -> AIAnalysisRecord:
+        incident = self.get_incident_by_id(incident_id)
+        if incident is None:
+            raise ResourceNotFoundError(f"Incident '{incident_id}' was not found")
+
+        record = AIAnalysisRecord(
+            analysis_id=f"AIA-{uuid4()}",
+            incident_id=incident.id,
+            model=model,
+            prompt_version=prompt_version,
+            prompt_sha256=prompt_sha256,
+            correlation_window_json=correlation_window_json,
+            ranked_signal_ids_json=ranked_signal_ids_json,
+            hypotheses_json=hypotheses_json,
+            remediation_suggestions_json=remediation_suggestions_json,
+        )
+        self.session.add(record)
+        self.session.commit()
+        self.session.refresh(record)
+        return record
+
+    def get_ai_analysis(self, analysis_id: str) -> AIAnalysisRecord | None:
+        return self.session.scalar(
+            select(AIAnalysisRecord).where(AIAnalysisRecord.analysis_id == analysis_id)
+        )
+
+    def list_ai_analyses(self, incident_id: str) -> list[AIAnalysisRecord]:
+        incident = self.get_incident_by_id(incident_id)
+        if incident is None:
+            return []
+        statement = (
+            select(AIAnalysisRecord)
+            .where(AIAnalysisRecord.incident_id == incident.id)
+            .order_by(AIAnalysisRecord.created_at.desc())
+        )
+        return list(self.session.scalars(statement).all())
+
+    def create_ai_analysis_feedback(
+        self,
+        *,
+        analysis_id: str,
+        hypothesis_index: int,
+        rating: str,
+        operator_name: str,
+        comment: str | None = None,
+    ) -> AIAnalysisFeedback:
+        analysis = self.get_ai_analysis(analysis_id)
+        if analysis is None:
+            raise ResourceNotFoundError(f"AI analysis '{analysis_id}' was not found")
+        if hypothesis_index >= len(analysis.hypotheses_json):
+            raise InvalidFeedbackError(
+                f"Hypothesis index {hypothesis_index} does not exist in analysis '{analysis_id}'"
+            )
+
+        feedback = AIAnalysisFeedback(
+            feedback_id=f"AIF-{uuid4()}",
+            analysis_id=analysis.id,
+            hypothesis_index=hypothesis_index,
+            rating=rating,
+            operator_name=operator_name,
+            comment=comment,
+        )
+        self.session.add(feedback)
+        self.session.commit()
+        self.session.refresh(feedback)
+        return feedback
 
     def _resolve_evidence_context(
         self, service_name: str, incident_id: str | None
