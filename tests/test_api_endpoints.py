@@ -1,5 +1,38 @@
 from fastapi.testclient import TestClient
 
+from incident_investigation_agent.api.app import app
+from incident_investigation_agent.api.dependencies import get_hypothesis_generator
+from incident_investigation_agent.services.ai_analysis_service import (
+    AIAnalysis,
+    AIHypothesis,
+    RemediationSuggestion,
+)
+
+
+class FakeHypothesisGenerator:
+    model = "test-model"
+
+    def generate(self, **kwargs) -> AIAnalysis:
+        signal_id = kwargs["ranked_signals"][0]["signal_id"]
+        return AIAnalysis(
+            hypotheses=[
+                AIHypothesis(
+                    hypothesis="A recent failure signal likely explains the incident",
+                    reasoning="The signal is close to incident start.",
+                    confidence=0.78,
+                    supporting_signals=[signal_id],
+                )
+            ],
+            remediation_suggestions=[
+                RemediationSuggestion(
+                    action="Roll back the suspected change",
+                    rationale="This is a reversible mitigation tied to the evidence.",
+                    priority="immediate",
+                    supporting_signals=[signal_id],
+                )
+            ],
+        )
+
 def test_incident_api_endpoints_work(client: TestClient) -> None:
     create_response = client.post(
         "/incidents",
@@ -181,3 +214,53 @@ def test_ingestion_preserves_source_timestamp(client: TestClient) -> None:
 def test_evidence_queries_return_not_found_for_unknown_incident(client: TestClient) -> None:
     assert client.get("/incidents/INC-MISSING/logs").status_code == 404
     assert client.get("/incidents/INC-MISSING/alerts").status_code == 404
+
+
+def test_ai_analysis_returns_grounded_hypotheses_and_remediations(client: TestClient) -> None:
+    app.dependency_overrides[get_hypothesis_generator] = FakeHypothesisGenerator
+    client.post(
+        "/incidents",
+        json={
+            "service_name": "checkout-service",
+            "title": "Checkout unavailable",
+            "summary": "Checkout requests are timing out",
+            "incident_id": "INC-5001",
+            "started_at": "2026-08-22T12:00:00Z",
+        },
+    )
+    client.post(
+        "/logs",
+        json={
+            "service_name": "checkout-service",
+            "message": "Database connection timeout",
+            "level": "ERROR",
+            "incident_id": "INC-5001",
+            "timestamp": "2026-08-22T12:01:00Z",
+        },
+    )
+
+    response = client.post("/incidents/INC-5001/ai-analysis")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["incident_id"] == "INC-5001"
+    assert payload["model"] == "test-model"
+    assert payload["hypotheses"][0]["supporting_signals"] == ["log:1"]
+    assert payload["remediation_suggestions"][0]["priority"] == "immediate"
+
+
+def test_ai_analysis_requires_configuration(client: TestClient) -> None:
+    client.post(
+        "/incidents",
+        json={
+            "service_name": "search-service",
+            "title": "Search degraded",
+            "summary": "Search latency increased",
+            "incident_id": "INC-5002",
+        },
+    )
+
+    response = client.post("/incidents/INC-5002/ai-analysis")
+
+    assert response.status_code == 503
+    assert "OPENAI_API_KEY" in response.json()["detail"]

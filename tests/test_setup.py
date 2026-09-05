@@ -7,3 +7,5 @@ def test_default_settings_are_loaded() -> None:
     assert settings.api_port > 0
     assert settings.correlation_lookback_minutes > 0
     assert settings.correlation_lookahead_minutes >= 0
+    assert settings.openai_model
+    assert settings.ai_max_ranked_signals > 0

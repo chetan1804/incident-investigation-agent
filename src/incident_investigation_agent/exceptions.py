@@ -8,3 +8,11 @@ class ResourceNotFoundError(IncidentInvestigationError):
 
 class ResourceConflictError(IncidentInvestigationError):
     """Raised when a request conflicts with existing domain data."""
+
+
+class AIAnalysisUnavailableError(IncidentInvestigationError):
+    """Raised when AI analysis is not configured or cannot be reached."""
+
+
+class AIAnalysisError(IncidentInvestigationError):
+    """Raised when an AI provider returns unusable analysis."""

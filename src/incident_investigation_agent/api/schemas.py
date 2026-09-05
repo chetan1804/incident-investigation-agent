@@ -80,6 +80,27 @@ class InvestigationResponse(BaseModel):
     recent_deployment: RecentDeploymentResponse | None
 
 
+class AIHypothesisResponse(BaseModel):
+    hypothesis: str
+    reasoning: str
+    confidence: float = Field(ge=0, le=1)
+    supporting_signals: list[str]
+
+
+class RemediationSuggestionResponse(BaseModel):
+    action: str
+    rationale: str
+    priority: str
+    supporting_signals: list[str]
+
+
+class AIAnalysisResponse(BaseModel):
+    incident_id: str
+    model: str
+    hypotheses: list[AIHypothesisResponse]
+    remediation_suggestions: list[RemediationSuggestionResponse]
+
+
 class LogCreateRequest(BaseModel):
     service_name: str = Field(min_length=1, max_length=255)
     message: str = Field(min_length=1)

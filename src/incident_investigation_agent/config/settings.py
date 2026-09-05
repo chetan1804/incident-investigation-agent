@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     database_url: str = Field(default="sqlite:///./incident_investigation_agent.db")
     correlation_lookback_minutes: int = Field(default=60, ge=1, le=1440)
     correlation_lookahead_minutes: int = Field(default=30, ge=0, le=1440)
+    openai_api_key: str | None = Field(default=None, repr=False)
+    openai_model: str = Field(default="gpt-5-mini", min_length=1)
+    ai_max_ranked_signals: int = Field(default=20, ge=1, le=100)
 
 
 settings = Settings()

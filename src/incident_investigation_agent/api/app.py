@@ -3,8 +3,9 @@ from __future__ import annotations
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse
 
-from incident_investigation_agent.api.dependencies import get_incident_service
+from incident_investigation_agent.api.dependencies import get_hypothesis_generator, get_incident_service
 from incident_investigation_agent.api.schemas import (
+    AIAnalysisResponse,
     AlertCreateRequest,
     DeploymentCreateRequest,
     IncidentCreateRequest,
@@ -13,7 +14,13 @@ from incident_investigation_agent.api.schemas import (
     LogCreateRequest,
 )
 from incident_investigation_agent.config.settings import settings
-from incident_investigation_agent.exceptions import ResourceConflictError, ResourceNotFoundError
+from incident_investigation_agent.exceptions import (
+    AIAnalysisError,
+    AIAnalysisUnavailableError,
+    ResourceConflictError,
+    ResourceNotFoundError,
+)
+from incident_investigation_agent.services.ai_analysis_service import HypothesisGenerator
 from incident_investigation_agent.services.incident_service import IncidentService
 
 app = FastAPI(title="Incident Investigation Agent", version="0.1.0")
@@ -27,6 +34,16 @@ def handle_not_found(_request: Request, exc: ResourceNotFoundError) -> JSONRespo
 @app.exception_handler(ResourceConflictError)
 def handle_conflict(_request: Request, exc: ResourceConflictError) -> JSONResponse:
     return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
+
+
+@app.exception_handler(AIAnalysisUnavailableError)
+def handle_ai_unavailable(_request: Request, exc: AIAnalysisUnavailableError) -> JSONResponse:
+    return JSONResponse(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, content={"detail": str(exc)})
+
+
+@app.exception_handler(AIAnalysisError)
+def handle_ai_error(_request: Request, exc: AIAnalysisError) -> JSONResponse:
+    return JSONResponse(status_code=status.HTTP_502_BAD_GATEWAY, content={"detail": str(exc)})
 
 
 @app.get("/incidents", response_model=list[IncidentResponse])
@@ -183,6 +200,36 @@ def investigate_incident(
     if investigation is None:
         raise HTTPException(status_code=404, detail="Incident not found")
     return investigation
+
+
+@app.post("/incidents/{incident_id}/ai-analysis", response_model=AIAnalysisResponse)
+def analyze_incident_with_ai(
+    incident_id: str,
+    lookback_minutes: int = Query(default=settings.correlation_lookback_minutes, ge=1, le=1440),
+    lookahead_minutes: int = Query(default=settings.correlation_lookahead_minutes, ge=0, le=1440),
+    incident_service: IncidentService = Depends(get_incident_service),
+    hypothesis_generator: HypothesisGenerator = Depends(get_hypothesis_generator),
+) -> dict:
+    investigation = incident_service.investigate(
+        incident_id,
+        lookback_minutes=lookback_minutes,
+        lookahead_minutes=lookahead_minutes,
+    )
+    if investigation is None:
+        raise HTTPException(status_code=404, detail="Incident not found")
+
+    ranked_signals = investigation["ranked_signals"][: settings.ai_max_ranked_signals]
+    analysis = hypothesis_generator.generate(
+        incident_id=incident_id,
+        summary=investigation["summary"],
+        severity=investigation["severity"],
+        ranked_signals=ranked_signals,
+    )
+    return {
+        "incident_id": incident_id,
+        "model": hypothesis_generator.model,
+        **analysis.model_dump(),
+    }
 
 
 @app.get("/services/{service_name}/deployments")

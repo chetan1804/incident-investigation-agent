@@ -13,6 +13,7 @@ Build an agentic AI system that helps engineers investigate production incidents
 - Reject evidence linked to missing incidents or the wrong service.
 - Correlate evidence within configurable incident time windows.
 - Rank signals and generate deterministic root-cause candidates with confidence scores.
+- Generate structured AI hypotheses and remediation suggestions grounded in ranked signals.
 - Manage schema changes with Alembic migrations.
 
 ## Structure
@@ -73,6 +74,18 @@ GET /incidents/INC-4001/investigation?lookback_minutes=120&lookahead_minutes=45
 
 The defaults can be changed with `CORRELATION_LOOKBACK_MINUTES` and `CORRELATION_LOOKAHEAD_MINUTES`. Confidence values currently use the transparent `deterministic_v1` severity-and-proximity heuristic; they are ranking scores, not statistically calibrated probabilities.
 
+## AI-assisted analysis
+
+Set `OPENAI_API_KEY` to enable AI analysis. `OPENAI_MODEL` defaults to `gpt-5-mini`, and `AI_MAX_RANKED_SIGNALS` limits how much correlated evidence is sent to the model. The provider request uses structured output and `store=false`; generated items are rejected if they cite signal IDs that were not in the ranked evidence.
+
+Request analysis after ingesting evidence:
+
+```text
+POST /incidents/INC-4001/ai-analysis?lookback_minutes=120&lookahead_minutes=45
+```
+
+The existing `GET /incidents/{incident_id}/investigation` remains deterministic and does not require an API key. AI confidence values are model judgments, not calibrated probabilities, and remediation suggestions should be reviewed by an operator before execution.
+
 ## Next step
 
-Introduce AI-generated root-cause hypotheses and remediation suggestions grounded in the ranked evidence.
+Persist AI analyses with prompt/model metadata and capture operator feedback on hypothesis quality.
