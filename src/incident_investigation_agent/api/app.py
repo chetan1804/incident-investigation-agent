@@ -8,6 +8,7 @@ from incident_investigation_agent.api.schemas import (
     AIAnalysisFeedbackCreateRequest,
     AIAnalysisFeedbackResponse,
     AIAnalysisResponse,
+    AIEvaluationMetricsResponse,
     AlertCreateRequest,
     DeploymentCreateRequest,
     IncidentCreateRequest,
@@ -316,6 +317,18 @@ def create_ai_analysis_feedback(
         "comment": feedback.comment,
         "created_at": feedback.created_at,
     }
+
+
+@app.get("/ai-evaluations/metrics", response_model=AIEvaluationMetricsResponse)
+def get_ai_evaluation_metrics(
+    prompt_version: str | None = Query(default=None, min_length=1, max_length=64),
+    model: str | None = Query(default=None, min_length=1, max_length=128),
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> dict:
+    return incident_service.get_ai_evaluation_metrics(
+        prompt_version=prompt_version,
+        model=model,
+    )
 
 
 @app.get("/services/{service_name}/deployments")

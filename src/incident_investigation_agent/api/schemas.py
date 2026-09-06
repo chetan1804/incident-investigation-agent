@@ -125,6 +125,31 @@ class AIAnalysisFeedbackResponse(BaseModel):
     created_at: datetime
 
 
+class AIEvaluationFiltersResponse(BaseModel):
+    prompt_version: str | None
+    model: str | None
+
+
+class AIRatingCountsResponse(BaseModel):
+    accurate: int
+    partially_accurate: int
+    inaccurate: int
+    uncertain: int
+
+
+class AIEvaluationMetricsResponse(BaseModel):
+    filters: AIEvaluationFiltersResponse
+    total_analyses: int
+    analyses_with_feedback: int
+    total_hypotheses: int
+    hypotheses_with_feedback: int
+    feedback_coverage: float = Field(ge=0, le=1)
+    total_feedback: int
+    decided_feedback: int
+    rating_counts: AIRatingCountsResponse
+    accuracy_score: float | None = Field(default=None, ge=0, le=1)
+
+
 class LogCreateRequest(BaseModel):
     service_name: str = Field(min_length=1, max_length=255)
     message: str = Field(min_length=1)

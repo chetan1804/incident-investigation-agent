@@ -87,6 +87,20 @@ class IncidentService:
     def list_ai_analyses(self, incident_id: str) -> list[AIAnalysisRecord]:
         return self.repository.list_ai_analyses(incident_id)
 
+    def get_ai_evaluation_metrics(
+        self,
+        *,
+        prompt_version: str | None = None,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        records = self.repository.list_ai_analyses_for_evaluation(
+            prompt_version=prompt_version,
+            model=model,
+        )
+        metrics = self._aggregate_evaluation_metrics(records)
+        metrics["filters"] = {"prompt_version": prompt_version, "model": model}
+        return metrics
+
     def add_ai_analysis_feedback(
         self,
         *,
@@ -103,6 +117,51 @@ class IncidentService:
             operator_name=operator_name,
             comment=comment,
         )
+
+    @staticmethod
+    def _aggregate_evaluation_metrics(records: list[AIAnalysisRecord]) -> dict[str, Any]:
+        rating_counts = {
+            "accurate": 0,
+            "partially_accurate": 0,
+            "inaccurate": 0,
+            "uncertain": 0,
+        }
+        assessed_hypotheses: set[tuple[int, int]] = set()
+        analyses_with_feedback = 0
+
+        for record in records:
+            if record.feedback:
+                analyses_with_feedback += 1
+            for feedback in record.feedback:
+                if feedback.rating in rating_counts:
+                    rating_counts[feedback.rating] += 1
+                assessed_hypotheses.add((record.id, feedback.hypothesis_index))
+
+        total_feedback = sum(rating_counts.values())
+        decided_feedback = total_feedback - rating_counts["uncertain"]
+        weighted_score = (
+            rating_counts["accurate"] + 0.5 * rating_counts["partially_accurate"]
+        )
+        total_hypotheses = sum(len(record.hypotheses_json) for record in records)
+
+        return {
+            "filters": {"prompt_version": None, "model": None},
+            "total_analyses": len(records),
+            "analyses_with_feedback": analyses_with_feedback,
+            "total_hypotheses": total_hypotheses,
+            "hypotheses_with_feedback": len(assessed_hypotheses),
+            "feedback_coverage": (
+                round(len(assessed_hypotheses) / total_hypotheses, 4)
+                if total_hypotheses
+                else 0.0
+            ),
+            "total_feedback": total_feedback,
+            "decided_feedback": decided_feedback,
+            "rating_counts": rating_counts,
+            "accuracy_score": (
+                round(weighted_score / decided_feedback, 4) if decided_feedback else None
+            ),
+        }
 
     def investigate(
         self,

@@ -322,6 +322,71 @@ def test_ai_analysis_feedback_validates_analysis_and_hypothesis(client: TestClie
     assert client.get("/incidents/INC-MISSING/ai-analyses").status_code == 404
 
 
+def test_ai_evaluation_metrics_aggregate_and_filter_feedback(client: TestClient) -> None:
+    app.dependency_overrides[get_hypothesis_generator] = FakeHypothesisGenerator
+    client.post(
+        "/incidents",
+        json={
+            "service_name": "catalog-service",
+            "title": "Catalog unavailable",
+            "summary": "Catalog requests fail",
+            "incident_id": "INC-5004",
+        },
+    )
+    client.post(
+        "/alerts",
+        json={
+            "service_name": "catalog-service",
+            "name": "catalog_error_rate",
+            "severity": "high",
+            "incident_id": "INC-5004",
+        },
+    )
+    analysis = client.post("/incidents/INC-5004/ai-analysis").json()
+    for rating in ("accurate", "partially_accurate", "uncertain"):
+        response = client.post(
+            f"/ai-analyses/{analysis['analysis_id']}/feedback",
+            json={
+                "hypothesis_index": 0,
+                "rating": rating,
+                "operator_name": f"operator-{rating}",
+            },
+        )
+        assert response.status_code == 201
+
+    response = client.get(
+        "/ai-evaluations/metrics?prompt_version=test_prompt_v1&model=test-model"
+    )
+
+    assert response.status_code == 200
+    metrics = response.json()
+    assert metrics["filters"] == {
+        "prompt_version": "test_prompt_v1",
+        "model": "test-model",
+    }
+    assert metrics["total_analyses"] == 1
+    assert metrics["analyses_with_feedback"] == 1
+    assert metrics["total_hypotheses"] == 1
+    assert metrics["hypotheses_with_feedback"] == 1
+    assert metrics["feedback_coverage"] == 1.0
+    assert metrics["total_feedback"] == 3
+    assert metrics["decided_feedback"] == 2
+    assert metrics["rating_counts"] == {
+        "accurate": 1,
+        "partially_accurate": 1,
+        "inaccurate": 0,
+        "uncertain": 1,
+    }
+    assert metrics["accuracy_score"] == 0.75
+
+    empty_metrics = client.get(
+        "/ai-evaluations/metrics?prompt_version=unknown"
+    ).json()
+    assert empty_metrics["total_analyses"] == 0
+    assert empty_metrics["feedback_coverage"] == 0.0
+    assert empty_metrics["accuracy_score"] is None
+
+
 def test_ai_analysis_requires_configuration(client: TestClient) -> None:
     from incident_investigation_agent.services.ai_analysis_service import (
         UnavailableHypothesisGenerator,

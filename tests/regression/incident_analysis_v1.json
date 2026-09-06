@@ -1,0 +1,60 @@
+{
+  "dataset_version": "incident_analysis_v1",
+  "prompt_version": "incident_analysis_v1",
+  "cases": [
+    {
+      "case_id": "deployment_precedes_database_errors",
+      "incident": {
+        "incident_id": "REG-001",
+        "summary": "Checkout failures increased immediately after a release",
+        "severity": "high"
+      },
+      "ranked_signals": [
+        {
+          "signal_id": "deployment:DEPLOY-REG-1",
+          "kind": "deployment",
+          "description": "DEPLOY-REG-1 (v2.4.0)",
+          "confidence": 0.91
+        },
+        {
+          "signal_id": "log:REG-1",
+          "kind": "log",
+          "description": "ERROR database connection pool exhausted",
+          "confidence": 0.88
+        }
+      ],
+      "expectations": {
+        "minimum_hypotheses": 1,
+        "allowed_signal_ids": ["deployment:DEPLOY-REG-1", "log:REG-1"],
+        "required_signal_ids": ["deployment:DEPLOY-REG-1", "log:REG-1"]
+      }
+    },
+    {
+      "case_id": "alert_and_timeout_without_deployment",
+      "incident": {
+        "incident_id": "REG-002",
+        "summary": "Search latency and timeout rates are elevated",
+        "severity": "medium"
+      },
+      "ranked_signals": [
+        {
+          "signal_id": "alert:REG-2",
+          "kind": "alert",
+          "description": "search_latency_p99 (warning)",
+          "confidence": 0.74
+        },
+        {
+          "signal_id": "log:REG-2",
+          "kind": "log",
+          "description": "ERROR upstream request timed out",
+          "confidence": 0.7
+        }
+      ],
+      "expectations": {
+        "minimum_hypotheses": 1,
+        "allowed_signal_ids": ["alert:REG-2", "log:REG-2"],
+        "required_signal_ids": ["alert:REG-2", "log:REG-2"]
+      }
+    }
+  ]
+}

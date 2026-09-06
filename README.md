@@ -15,6 +15,8 @@ Build an agentic AI system that helps engineers investigate production incidents
 - Rank signals and generate deterministic root-cause candidates with confidence scores.
 - Generate structured AI hypotheses and remediation suggestions grounded in ranked signals.
 - Persist AI analysis snapshots and collect hypothesis-level operator feedback.
+- Aggregate feedback coverage and accuracy metrics by prompt version or model.
+- Maintain a versioned regression dataset for evaluating prompt changes.
 - Manage schema changes with Alembic migrations.
 
 ## Structure
@@ -106,8 +108,22 @@ POST /ai-analyses/AIA-.../feedback
 
 Allowed ratings are `accurate`, `partially_accurate`, `inaccurate`, and `uncertain`.
 
+Aggregate feedback into evaluation metrics, optionally scoped to a prompt version or model:
+
+```text
+GET /ai-evaluations/metrics?prompt_version=incident_analysis_v1&model=gpt-5-mini
+```
+
+`accuracy_score` assigns weights of 1.0 to `accurate`, 0.5 to
+`partially_accurate`, and 0.0 to `inaccurate`; `uncertain` feedback is excluded
+from that score. `feedback_coverage` measures the fraction of generated
+hypotheses that have at least one operator assessment. The versioned cases in
+`tests/regression/incident_analysis_v1.json` are the baseline dataset for prompt
+regression runs.
+
 The existing `GET /incidents/{incident_id}/investigation` remains deterministic and does not require an API key. AI confidence values are model judgments, not calibrated probabilities, and remediation suggestions should be reviewed by an operator before execution.
 
 ## Next step
 
-Aggregate operator feedback into evaluation metrics and add regression datasets for prompt changes.
+Add an automated prompt-regression runner that compares candidate prompt output
+against the versioned dataset and stores evaluation results.

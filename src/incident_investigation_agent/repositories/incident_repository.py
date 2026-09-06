@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from incident_investigation_agent.exceptions import (
     InvalidFeedbackError,
@@ -266,6 +266,21 @@ class IncidentRepository:
             .where(AIAnalysisRecord.incident_id == incident.id)
             .order_by(AIAnalysisRecord.created_at.desc())
         )
+        return list(self.session.scalars(statement).all())
+
+    def list_ai_analyses_for_evaluation(
+        self,
+        *,
+        prompt_version: str | None = None,
+        model: str | None = None,
+    ) -> list[AIAnalysisRecord]:
+        """Return analysis snapshots and feedback used to calculate evaluation metrics."""
+        statement = select(AIAnalysisRecord).options(selectinload(AIAnalysisRecord.feedback))
+        if prompt_version is not None:
+            statement = statement.where(AIAnalysisRecord.prompt_version == prompt_version)
+        if model is not None:
+            statement = statement.where(AIAnalysisRecord.model == model)
+        statement = statement.order_by(AIAnalysisRecord.created_at.asc())
         return list(self.session.scalars(statement).all())
 
     def create_ai_analysis_feedback(
