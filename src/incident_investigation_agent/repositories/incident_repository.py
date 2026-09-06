@@ -15,6 +15,7 @@ from incident_investigation_agent.exceptions import (
 from incident_investigation_agent.models.incident_models import (
     AIAnalysisFeedback,
     AIAnalysisRecord,
+    AIRegressionRun,
     Alert,
     Deployment,
     Incident,
@@ -312,6 +313,42 @@ class IncidentRepository:
         self.session.commit()
         self.session.refresh(feedback)
         return feedback
+
+    def create_ai_regression_run(
+        self,
+        *,
+        dataset_version: str,
+        model: str,
+        prompt_version: str,
+        prompt_sha256: str,
+        passed: bool,
+        total_cases: int,
+        passed_cases: int,
+        results_json: list[dict],
+    ) -> AIRegressionRun:
+        run = AIRegressionRun(
+            run_id=f"AIR-{uuid4()}",
+            dataset_version=dataset_version,
+            model=model,
+            prompt_version=prompt_version,
+            prompt_sha256=prompt_sha256,
+            passed=passed,
+            total_cases=total_cases,
+            passed_cases=passed_cases,
+            results_json=results_json,
+        )
+        self.session.add(run)
+        self.session.commit()
+        self.session.refresh(run)
+        return run
+
+    def list_ai_regression_runs(self, limit: int = 50) -> list[AIRegressionRun]:
+        statement = (
+            select(AIRegressionRun)
+            .order_by(AIRegressionRun.created_at.desc())
+            .limit(limit)
+        )
+        return list(self.session.scalars(statement).all())
 
     def _resolve_evidence_context(
         self, service_name: str, incident_id: str | None

@@ -150,6 +150,34 @@ class AIEvaluationMetricsResponse(BaseModel):
     accuracy_score: float | None = Field(default=None, ge=0, le=1)
 
 
+class AIRegressionOutputResponse(BaseModel):
+    hypotheses: list[AIHypothesisResponse]
+    remediation_suggestions: list[RemediationSuggestionResponse]
+
+
+class AIRegressionCaseResultResponse(BaseModel):
+    case_id: str
+    passed: bool
+    failures: list[str]
+    hypothesis_count: int
+    remediation_count: int
+    cited_signal_ids: list[str]
+    output: AIRegressionOutputResponse | None
+
+
+class AIRegressionRunResponse(BaseModel):
+    run_id: str
+    dataset_version: str
+    model: str
+    prompt_version: str
+    prompt_sha256: str
+    passed: bool
+    total_cases: int
+    passed_cases: int
+    results: list[AIRegressionCaseResultResponse]
+    created_at: datetime
+
+
 class LogCreateRequest(BaseModel):
     service_name: str = Field(min_length=1, max_length=255)
     message: str = Field(min_length=1)

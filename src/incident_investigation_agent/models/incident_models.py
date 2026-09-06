@@ -167,3 +167,21 @@ class AIAnalysisFeedback(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
 
     analysis: Mapped[AIAnalysisRecord] = relationship(back_populates="feedback")
+
+
+class AIRegressionRun(Base):
+    """An immutable result from evaluating one prompt/model against a dataset."""
+
+    __tablename__ = "ai_regression_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    run_id: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    dataset_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    prompt_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    passed: Mapped[bool] = mapped_column(nullable=False)
+    total_cases: Mapped[int] = mapped_column(Integer, nullable=False)
+    passed_cases: Mapped[int] = mapped_column(Integer, nullable=False)
+    results_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)

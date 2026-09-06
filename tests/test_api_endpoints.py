@@ -2,6 +2,7 @@ from fastapi.testclient import TestClient
 
 from incident_investigation_agent.api.app import app
 from incident_investigation_agent.api.dependencies import get_hypothesis_generator
+from incident_investigation_agent.exceptions import AIAnalysisError
 from incident_investigation_agent.services.ai_analysis_service import (
     AIAnalysis,
     AIHypothesis,
@@ -34,6 +35,32 @@ class FakeHypothesisGenerator:
                 )
             ],
         )
+
+
+class PassingRegressionGenerator:
+    model = "candidate-model"
+    prompt_version = "candidate_prompt_v2"
+    prompt_sha256 = "b" * 64
+
+    def generate(self, **kwargs) -> AIAnalysis:
+        signal_ids = [signal["signal_id"] for signal in kwargs["ranked_signals"]]
+        return AIAnalysis(
+            hypotheses=[
+                AIHypothesis(
+                    hypothesis="The correlated signals may explain the incident",
+                    reasoning="Each supplied signal is relevant to the observed failure.",
+                    confidence=0.7,
+                    supporting_signals=signal_ids,
+                )
+            ],
+            remediation_suggestions=[],
+        )
+
+
+class InvalidRegressionGenerator(PassingRegressionGenerator):
+    def generate(self, **kwargs) -> AIAnalysis:
+        raise AIAnalysisError("candidate returned ungrounded output")
+
 
 def test_incident_api_endpoints_work(client: TestClient) -> None:
     create_response = client.post(
@@ -385,6 +412,46 @@ def test_ai_evaluation_metrics_aggregate_and_filter_feedback(client: TestClient)
     assert empty_metrics["total_analyses"] == 0
     assert empty_metrics["feedback_coverage"] == 0.0
     assert empty_metrics["accuracy_score"] is None
+
+
+def test_ai_prompt_regression_run_is_evaluated_and_persisted(client: TestClient) -> None:
+    app.dependency_overrides[get_hypothesis_generator] = PassingRegressionGenerator
+
+    response = client.post("/ai-evaluations/regression-runs")
+
+    assert response.status_code == 201
+    run = response.json()
+    assert run["run_id"].startswith("AIR-")
+    assert run["dataset_version"] == "incident_analysis_v1"
+    assert run["model"] == "candidate-model"
+    assert run["prompt_version"] == "candidate_prompt_v2"
+    assert run["passed"] is True
+    assert run["total_cases"] == 2
+    assert run["passed_cases"] == 2
+    assert all(result["passed"] for result in run["results"])
+    assert all(result["output"]["hypotheses"] for result in run["results"])
+
+    list_response = client.get("/ai-evaluations/regression-runs")
+    assert list_response.status_code == 200
+    assert [item["run_id"] for item in list_response.json()] == [run["run_id"]]
+
+    missing_response = client.post(
+        "/ai-evaluations/regression-runs?dataset_version=missing"
+    )
+    assert missing_response.status_code == 404
+
+
+def test_ai_prompt_regression_persists_invalid_output_as_failure(client: TestClient) -> None:
+    app.dependency_overrides[get_hypothesis_generator] = InvalidRegressionGenerator
+
+    response = client.post("/ai-evaluations/regression-runs")
+
+    assert response.status_code == 201
+    run = response.json()
+    assert run["passed"] is False
+    assert run["passed_cases"] == 0
+    assert run["results"][0]["failures"] == ["candidate returned ungrounded output"]
+    assert run["results"][0]["output"] is None
 
 
 def test_ai_analysis_requires_configuration(client: TestClient) -> None:

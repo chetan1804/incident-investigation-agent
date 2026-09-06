@@ -6,6 +6,7 @@ from typing import Any
 from incident_investigation_agent.models.incident_models import (
     AIAnalysisFeedback,
     AIAnalysisRecord,
+    AIRegressionRun,
     Alert,
     Deployment,
     Incident,
@@ -100,6 +101,9 @@ class IncidentService:
         metrics = self._aggregate_evaluation_metrics(records)
         metrics["filters"] = {"prompt_version": prompt_version, "model": model}
         return metrics
+
+    def list_ai_regression_runs(self, limit: int = 50) -> list[AIRegressionRun]:
+        return self.repository.list_ai_regression_runs(limit=limit)
 
     def add_ai_analysis_feedback(
         self,

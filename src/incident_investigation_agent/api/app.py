@@ -9,6 +9,7 @@ from incident_investigation_agent.api.schemas import (
     AIAnalysisFeedbackResponse,
     AIAnalysisResponse,
     AIEvaluationMetricsResponse,
+    AIRegressionRunResponse,
     AlertCreateRequest,
     DeploymentCreateRequest,
     IncidentCreateRequest,
@@ -24,8 +25,12 @@ from incident_investigation_agent.exceptions import (
     ResourceConflictError,
     ResourceNotFoundError,
 )
-from incident_investigation_agent.models.incident_models import AIAnalysisRecord
-from incident_investigation_agent.services.ai_analysis_service import HypothesisGenerator
+from incident_investigation_agent.models.incident_models import AIAnalysisRecord, AIRegressionRun
+from incident_investigation_agent.services.ai_analysis_service import (
+    PROMPT_VERSION,
+    HypothesisGenerator,
+)
+from incident_investigation_agent.services.ai_regression_service import AIRegressionService
 from incident_investigation_agent.services.incident_service import IncidentService
 
 app = FastAPI(title="Incident Investigation Agent", version="0.1.0")
@@ -80,6 +85,21 @@ def _serialize_ai_analysis(record: AIAnalysisRecord) -> dict:
             for item in sorted(record.feedback, key=lambda feedback: feedback.created_at)
         ],
         "created_at": record.created_at,
+    }
+
+
+def _serialize_ai_regression_run(run: AIRegressionRun) -> dict:
+    return {
+        "run_id": run.run_id,
+        "dataset_version": run.dataset_version,
+        "model": run.model,
+        "prompt_version": run.prompt_version,
+        "prompt_sha256": run.prompt_sha256,
+        "passed": run.passed,
+        "total_cases": run.total_cases,
+        "passed_cases": run.passed_cases,
+        "results": run.results_json,
+        "created_at": run.created_at,
     }
 
 
@@ -329,6 +349,37 @@ def get_ai_evaluation_metrics(
         prompt_version=prompt_version,
         model=model,
     )
+
+
+@app.post(
+    "/ai-evaluations/regression-runs",
+    response_model=AIRegressionRunResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def run_ai_prompt_regression(
+    dataset_version: str = Query(default=PROMPT_VERSION, min_length=1, max_length=64),
+    incident_service: IncidentService = Depends(get_incident_service),
+    hypothesis_generator: HypothesisGenerator = Depends(get_hypothesis_generator),
+) -> dict:
+    regression_service = AIRegressionService(
+        incident_service.repository,
+        hypothesis_generator,
+    )
+    return _serialize_ai_regression_run(regression_service.run(dataset_version))
+
+
+@app.get(
+    "/ai-evaluations/regression-runs",
+    response_model=list[AIRegressionRunResponse],
+)
+def list_ai_prompt_regression_runs(
+    limit: int = Query(default=50, ge=1, le=100),
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> list[dict]:
+    return [
+        _serialize_ai_regression_run(run)
+        for run in incident_service.list_ai_regression_runs(limit=limit)
+    ]
 
 
 @app.get("/services/{service_name}/deployments")

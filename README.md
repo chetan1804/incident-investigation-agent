@@ -16,7 +16,7 @@ Build an agentic AI system that helps engineers investigate production incidents
 - Generate structured AI hypotheses and remediation suggestions grounded in ranked signals.
 - Persist AI analysis snapshots and collect hypothesis-level operator feedback.
 - Aggregate feedback coverage and accuracy metrics by prompt version or model.
-- Maintain a versioned regression dataset for evaluating prompt changes.
+- Run and persist automated prompt regressions against a versioned dataset.
 - Manage schema changes with Alembic migrations.
 
 ## Structure
@@ -117,13 +117,29 @@ GET /ai-evaluations/metrics?prompt_version=incident_analysis_v1&model=gpt-5-mini
 `accuracy_score` assigns weights of 1.0 to `accurate`, 0.5 to
 `partially_accurate`, and 0.0 to `inaccurate`; `uncertain` feedback is excluded
 from that score. `feedback_coverage` measures the fraction of generated
-hypotheses that have at least one operator assessment. The versioned cases in
-`tests/regression/incident_analysis_v1.json` are the baseline dataset for prompt
-regression runs.
+hypotheses that have at least one operator assessment.
+
+Run the configured model and prompt against the bundled baseline dataset:
+
+```text
+POST /ai-evaluations/regression-runs?dataset_version=incident_analysis_v1
+```
+
+The response records pass/fail status for every case, including missing required
+citations and disallowed citations. Runs are persisted with the exact model,
+prompt version, and prompt hash. Retrieve recent results with:
+
+```text
+GET /ai-evaluations/regression-runs?limit=20
+```
+
+Regression datasets live in
+`src/incident_investigation_agent/evaluation_datasets/` and are included in the
+installed package.
 
 The existing `GET /incidents/{incident_id}/investigation` remains deterministic and does not require an API key. AI confidence values are model judgments, not calibrated probabilities, and remediation suggestions should be reviewed by an operator before execution.
 
 ## Next step
 
-Add an automated prompt-regression runner that compares candidate prompt output
-against the versioned dataset and stores evaluation results.
+Add regression quality gates and run-to-run comparisons so prompt candidates can
+be blocked automatically when baseline performance declines.
