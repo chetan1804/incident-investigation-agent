@@ -11,6 +11,7 @@ from incident_investigation_agent.models.incident_models import (
     Deployment,
     Incident,
     LogEntry,
+    ServiceDependency,
 )
 from incident_investigation_agent.repositories.incident_repository import IncidentRepository
 
@@ -58,6 +59,22 @@ class IncidentService:
 
     def get_deployments(self, service_name: str) -> list[Deployment]:
         return self.repository.get_deployments_for_service(service_name)
+
+    def create_service_dependency(
+        self,
+        *,
+        service_name: str,
+        depends_on_service_name: str,
+        criticality: str = "medium",
+    ) -> ServiceDependency:
+        return self.repository.create_service_dependency(
+            service_name=service_name,
+            depends_on_service_name=depends_on_service_name,
+            criticality=criticality,
+        )
+
+    def list_service_dependencies(self, service_name: str) -> list[ServiceDependency]:
+        return self.repository.list_service_dependencies(service_name)
 
     def save_ai_analysis(
         self,
@@ -192,6 +209,68 @@ class IncidentService:
             window_start=window_start,
             window_end=started_at,
         )
+        dependency_records = self.repository.list_service_dependencies(incident.service.name)
+        upstream_dependencies = [
+            (dependency.depends_on_service, dependency.criticality)
+            for dependency in dependency_records
+            if dependency.service_id == incident.service_id
+        ]
+        downstream_dependencies = [
+            (dependency.service, dependency.criticality)
+            for dependency in dependency_records
+            if dependency.depends_on_service_id == incident.service_id
+        ]
+        dependency_logs: list[dict[str, Any]] = []
+        dependency_alerts: list[dict[str, Any]] = []
+        dependency_deployments: list[dict[str, Any]] = []
+        correlated_service_ids: set[int] = set()
+        for direction, dependencies in (
+            ("upstream", upstream_dependencies),
+            ("downstream", downstream_dependencies),
+        ):
+            for service, criticality in dependencies:
+                if service.id in correlated_service_ids:
+                    continue
+                correlated_service_ids.add(service.id)
+                dependency_logs.extend(
+                    {
+                        "evidence": log,
+                        "service_name": service.name,
+                        "direction": direction,
+                        "criticality": criticality,
+                    }
+                    for log in self.repository.get_logs_for_service(
+                        service.name,
+                        window_start=window_start,
+                        window_end=window_end,
+                    )
+                )
+                dependency_alerts.extend(
+                    {
+                        "evidence": alert,
+                        "service_name": service.name,
+                        "direction": direction,
+                        "criticality": criticality,
+                    }
+                    for alert in self.repository.get_alerts_for_service(
+                        service.name,
+                        window_start=window_start,
+                        window_end=window_end,
+                    )
+                )
+                dependency_deployments.extend(
+                    {
+                        "evidence": deployment,
+                        "service_name": service.name,
+                        "direction": direction,
+                        "criticality": criticality,
+                    }
+                    for deployment in self.repository.get_deployments_for_service(
+                        service.name,
+                        window_start=window_start,
+                        window_end=started_at,
+                    )
+                )
 
         signals = [f"alert:{alert.name} ({alert.severity})" for alert in alerts]
         signals.extend(
@@ -199,11 +278,29 @@ class IncidentService:
         )
         if deployments:
             signals.append(f"deployment:{deployments[0].deployment_id} ({deployments[0].version})")
+        signals.extend(
+            f"{item['direction']}-alert:{item['service_name']}:{item['evidence'].name}"
+            for item in dependency_alerts
+        )
+        signals.extend(
+            f"{item['direction']}-log:{item['service_name']}:{item['evidence'].level} "
+            f"{item['evidence'].message}"
+            for item in dependency_logs
+            if self._is_error_log(item["evidence"])
+        )
+        signals.extend(
+            f"{item['direction']}-deployment:{item['service_name']}:"
+            f"{item['evidence'].deployment_id}"
+            for item in dependency_deployments
+        )
 
         ranked_signals = self._rank_signals(
             logs=logs,
             alerts=alerts,
             deployments=deployments,
+            dependency_logs=dependency_logs,
+            dependency_alerts=dependency_alerts,
+            dependency_deployments=dependency_deployments,
             started_at=started_at,
             lookback_minutes=lookback_minutes,
             lookahead_minutes=lookahead_minutes,
@@ -226,6 +323,19 @@ class IncidentService:
                 "logs": len(logs),
                 "alerts": len(alerts),
                 "deployments": len(deployments),
+                "dependency_logs": len(dependency_logs),
+                "dependency_alerts": len(dependency_alerts),
+                "dependency_deployments": len(dependency_deployments),
+            },
+            "dependencies": {
+                "upstream": [
+                    {"service_name": service.name, "criticality": criticality}
+                    for service, criticality in upstream_dependencies
+                ],
+                "downstream": [
+                    {"service_name": service.name, "criticality": criticality}
+                    for service, criticality in downstream_dependencies
+                ],
             },
             "signals": signals,
             "ranked_signals": ranked_signals,
@@ -247,6 +357,9 @@ class IncidentService:
         logs: list[LogEntry],
         alerts: list[Alert],
         deployments: list[Deployment],
+        dependency_logs: list[dict[str, Any]],
+        dependency_alerts: list[dict[str, Any]],
+        dependency_deployments: list[dict[str, Any]],
         started_at: datetime,
         lookback_minutes: int,
         lookahead_minutes: int,
@@ -304,6 +417,82 @@ class IncidentService:
                 }
             )
 
+        direction_weights = {"upstream": 0.9, "downstream": 0.65}
+        criticality_weights = {"high": 1.0, "medium": 0.85, "low": 0.7}
+        for item in dependency_alerts:
+            alert = item["evidence"]
+            proximity, timing = self._proximity(
+                alert.fired_at, started_at, lookback_minutes, lookahead_minutes
+            )
+            severity_weight = alert_weights.get(alert.severity.lower(), 0.55)
+            confidence = (0.65 * severity_weight + 0.35 * proximity) * direction_weights[
+                item["direction"]
+            ] * criticality_weights.get(item["criticality"], 0.85)
+            ranked.append(
+                {
+                    "signal_id": f"alert:{alert.id}",
+                    "kind": f"{item['direction']}_alert",
+                    "description": (
+                        f"{item['service_name']}: {alert.name} ({alert.severity})"
+                    ),
+                    "observed_at": self._as_utc(alert.fired_at).isoformat(),
+                    "confidence": round(confidence, 2),
+                    "reasoning": (
+                        f"{item['criticality'].title()}-criticality {item['direction']} "
+                        f"service alert observed {timing} incident start."
+                    ),
+                }
+            )
+
+        for item in dependency_logs:
+            log = item["evidence"]
+            level = log.level.upper()
+            if level not in log_weights:
+                continue
+            proximity, timing = self._proximity(
+                log.timestamp, started_at, lookback_minutes, lookahead_minutes
+            )
+            confidence = (0.65 * log_weights[level] + 0.35 * proximity) * direction_weights[
+                item["direction"]
+            ] * criticality_weights.get(item["criticality"], 0.85)
+            ranked.append(
+                {
+                    "signal_id": f"log:{log.id}",
+                    "kind": f"{item['direction']}_log",
+                    "description": f"{item['service_name']}: {level} {log.message}",
+                    "observed_at": self._as_utc(log.timestamp).isoformat(),
+                    "confidence": round(confidence, 2),
+                    "reasoning": (
+                        f"{item['criticality'].title()}-criticality {item['direction']} "
+                        f"service {level} log observed {timing} incident start."
+                    ),
+                }
+            )
+
+        for item in dependency_deployments:
+            deployment = item["evidence"]
+            proximity, timing = self._proximity(
+                deployment.deployed_at, started_at, lookback_minutes, lookahead_minutes
+            )
+            confidence = (0.6 + 0.35 * proximity) * direction_weights[
+                item["direction"]
+            ] * criticality_weights.get(item["criticality"], 0.85)
+            ranked.append(
+                {
+                    "signal_id": f"deployment:{deployment.deployment_id}",
+                    "kind": f"{item['direction']}_deployment",
+                    "description": (
+                        f"{item['service_name']}: {deployment.deployment_id} "
+                        f"({deployment.version})"
+                    ),
+                    "observed_at": self._as_utc(deployment.deployed_at).isoformat(),
+                    "confidence": round(confidence, 2),
+                    "reasoning": (
+                        f"{item['criticality'].title()}-criticality {item['direction']} "
+                        f"service deployment completed {timing} incident start."
+                    ),
+                }
+            )
         return sorted(ranked, key=lambda signal: (-signal["confidence"], signal["observed_at"]))
 
     @staticmethod
@@ -312,11 +501,16 @@ class IncidentService:
             "deployment": "A recent deployment may have introduced the incident",
             "log": "The failure recorded in application logs may be a direct contributor",
             "alert": "The condition represented by the alert may be contributing to the incident",
+            "upstream_alert": "A failing upstream dependency may be contributing to the incident",
+            "upstream_log": "A failure in an upstream dependency may be contributing to the incident",
+            "upstream_deployment": "A recent upstream deployment may be contributing to the incident",
         }
         candidates: list[dict[str, Any]] = []
         seen_kinds: set[str] = set()
         for signal in ranked_signals:
             kind = signal["kind"]
+            if kind not in templates:
+                continue
             if kind in seen_kinds:
                 continue
             seen_kinds.add(kind)

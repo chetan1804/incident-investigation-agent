@@ -129,7 +129,14 @@ def test_investigation_only_correlates_evidence_inside_time_window(db_session: S
     investigation = service.investigate("INC-2002", lookback_minutes=30, lookahead_minutes=15)
 
     assert investigation is not None
-    assert investigation["evidence"] == {"logs": 1, "alerts": 1, "deployments": 1}
+    assert investigation["evidence"] == {
+        "logs": 1,
+        "alerts": 1,
+        "deployments": 1,
+        "dependency_logs": 0,
+        "dependency_alerts": 0,
+        "dependency_deployments": 0,
+    }
     assert investigation["recent_deployment"]["deployment_id"] == "DEPLOY-IN-WINDOW"
     assert all("TOO-OLD" not in signal["description"] for signal in investigation["ranked_signals"])
     assert all("DEPLOY-AFTER" not in signal["description"] for signal in investigation["ranked_signals"])

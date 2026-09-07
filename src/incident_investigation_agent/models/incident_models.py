@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from incident_investigation_agent.database.base import Base
@@ -44,6 +44,33 @@ class Service(Base):
     deployments: Mapped[list["Deployment"]] = relationship(back_populates="service")
     logs: Mapped[list["LogEntry"]] = relationship(back_populates="service")
     alerts: Mapped[list["Alert"]] = relationship(back_populates="service")
+
+
+class ServiceDependency(Base):
+    """A directed dependency where one service relies on another service."""
+
+    __tablename__ = "service_dependencies"
+    __table_args__ = (
+        UniqueConstraint(
+            "service_id",
+            "depends_on_service_id",
+            name="uq_service_dependencies_direction",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    dependency_id: Mapped[str] = mapped_column(
+        String(64), unique=True, index=True, nullable=False
+    )
+    service_id: Mapped[int] = mapped_column(ForeignKey("services.id"), nullable=False, index=True)
+    depends_on_service_id: Mapped[int] = mapped_column(
+        ForeignKey("services.id"), nullable=False, index=True
+    )
+    criticality: Mapped[str] = mapped_column(String(32), default="medium", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    service: Mapped[Service] = relationship(foreign_keys=[service_id])
+    depends_on_service: Mapped[Service] = relationship(foreign_keys=[depends_on_service_id])
 
 
 class Incident(Base):

@@ -19,6 +19,8 @@ from incident_investigation_agent.api.schemas import (
     IncidentResponse,
     InvestigationResponse,
     LogCreateRequest,
+    ServiceDependencyCreateRequest,
+    ServiceDependencyResponse,
 )
 from incident_investigation_agent.config.settings import settings
 from incident_investigation_agent.exceptions import (
@@ -185,6 +187,25 @@ def create_deployment(
         "deployment_id": deployment.deployment_id,
         "version": deployment.version,
         "service_name": payload.service_name,
+    }
+
+
+@app.post(
+    "/service-dependencies",
+    response_model=ServiceDependencyResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_service_dependency(
+    payload: ServiceDependencyCreateRequest,
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> dict:
+    dependency = incident_service.create_service_dependency(**payload.model_dump())
+    return {
+        "dependency_id": dependency.dependency_id,
+        "service_name": dependency.service.name,
+        "depends_on_service_name": dependency.depends_on_service.name,
+        "criticality": dependency.criticality,
+        "created_at": dependency.created_at,
     }
 
 
@@ -446,4 +467,25 @@ def get_service_deployments(
             "deployed_at": deployment.deployed_at.isoformat(),
         }
         for deployment in deployments
+    ]
+
+
+@app.get(
+    "/services/{service_name}/dependencies",
+    response_model=list[ServiceDependencyResponse],
+)
+def get_service_dependencies(
+    service_name: str,
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> list[dict]:
+    dependencies = incident_service.list_service_dependencies(service_name)
+    return [
+        {
+            "dependency_id": dependency.dependency_id,
+            "service_name": dependency.service.name,
+            "depends_on_service_name": dependency.depends_on_service.name,
+            "criticality": dependency.criticality,
+            "created_at": dependency.created_at,
+        }
+        for dependency in dependencies
     ]

@@ -11,6 +11,7 @@ from incident_investigation_agent.models.incident_models import (
     IncidentStatus,
     LogEntry,
     Service,
+    ServiceDependency,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "IncidentStatus",
     "LogEntry",
     "Service",
+    "ServiceDependency",
 ]

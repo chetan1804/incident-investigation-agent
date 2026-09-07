@@ -21,6 +21,7 @@ from incident_investigation_agent.models.incident_models import (
     Incident,
     LogEntry,
     Service,
+    ServiceDependency,
 )
 
 
@@ -78,6 +79,97 @@ class IncidentRepository:
 
     def list_incidents(self, limit: int = 50) -> list[Incident]:
         statement = select(Incident).order_by(Incident.created_at.desc()).limit(limit)
+        return list(self.session.scalars(statement).all())
+
+    def create_service_dependency(
+        self,
+        *,
+        service_name: str,
+        depends_on_service_name: str,
+        criticality: str = "medium",
+    ) -> ServiceDependency:
+        if service_name == depends_on_service_name:
+            raise ResourceConflictError("A service cannot depend on itself")
+        service = self.create_service(name=service_name)
+        upstream = self.create_service(name=depends_on_service_name)
+        existing = self.session.scalar(
+            select(ServiceDependency).where(
+                ServiceDependency.service_id == service.id,
+                ServiceDependency.depends_on_service_id == upstream.id,
+            )
+        )
+        if existing is not None:
+            raise ResourceConflictError(
+                f"Dependency from '{service_name}' to '{depends_on_service_name}' already exists"
+            )
+
+        dependency = ServiceDependency(
+            dependency_id=f"SD-{uuid4()}",
+            service_id=service.id,
+            depends_on_service_id=upstream.id,
+            criticality=criticality,
+        )
+        self.session.add(dependency)
+        self._commit_or_conflict(
+            f"Dependency from '{service_name}' to '{depends_on_service_name}' already exists"
+        )
+        self.session.refresh(dependency)
+        return dependency
+
+    def list_service_dependencies(self, service_name: str) -> list[ServiceDependency]:
+        service = self.session.scalar(select(Service).where(Service.name == service_name))
+        if service is None:
+            raise ResourceNotFoundError(f"Service '{service_name}' was not found")
+        statement = (
+            select(ServiceDependency)
+            .where(
+                (ServiceDependency.service_id == service.id)
+                | (ServiceDependency.depends_on_service_id == service.id)
+            )
+            .options(
+                selectinload(ServiceDependency.service),
+                selectinload(ServiceDependency.depends_on_service),
+            )
+            .order_by(ServiceDependency.created_at.asc())
+        )
+        return list(self.session.scalars(statement).all())
+
+    def get_logs_for_service(
+        self,
+        service_name: str,
+        *,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> list[LogEntry]:
+        statement = (
+            select(LogEntry)
+            .join(Service)
+            .where(
+                Service.name == service_name,
+                LogEntry.timestamp >= window_start,
+                LogEntry.timestamp <= window_end,
+            )
+            .order_by(LogEntry.timestamp.asc())
+        )
+        return list(self.session.scalars(statement).all())
+
+    def get_alerts_for_service(
+        self,
+        service_name: str,
+        *,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> list[Alert]:
+        statement = (
+            select(Alert)
+            .join(Service)
+            .where(
+                Service.name == service_name,
+                Alert.fired_at >= window_start,
+                Alert.fired_at <= window_end,
+            )
+            .order_by(Alert.fired_at.asc())
+        )
         return list(self.session.scalars(statement).all())
 
     def get_logs_for_incident(

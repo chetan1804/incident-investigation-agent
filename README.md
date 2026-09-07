@@ -17,6 +17,7 @@ Build an agentic AI system that helps engineers investigate production incidents
 - Persist AI analysis snapshots and collect hypothesis-level operator feedback.
 - Aggregate feedback coverage and accuracy metrics by prompt version or model.
 - Run and persist automated prompt regressions against a versioned dataset.
+- Correlate time-windowed evidence from upstream and downstream service dependencies.
 - Manage schema changes with Alembic migrations.
 
 ## Structure
@@ -76,6 +77,27 @@ GET /incidents/INC-4001/investigation?lookback_minutes=120&lookahead_minutes=45
 ```
 
 The defaults can be changed with `CORRELATION_LOOKBACK_MINUTES` and `CORRELATION_LOOKAHEAD_MINUTES`. Confidence values currently use the transparent `deterministic_v1` severity-and-proximity heuristic; they are ranking scores, not statistically calibrated probabilities.
+
+## Service dependencies
+
+Register a directed dependency when one service relies on another:
+
+```text
+POST /service-dependencies
+
+{
+  "service_name": "checkout-service",
+  "depends_on_service_name": "payments-service",
+  "criticality": "high"
+}
+```
+
+List both upstream and downstream relationships for a service with
+`GET /services/{service_name}/dependencies`. Investigations automatically include
+time-windowed logs, alerts, and deployments from directly connected services.
+Upstream failures and changes can become root-cause candidates, while downstream
+failures are ranked as impact signals and are not presented as causes. Dependency
+criticality influences signal ranking.
 
 ## AI-assisted analysis
 
@@ -166,5 +188,5 @@ The existing `GET /incidents/{incident_id}/investigation` remains deterministic 
 
 ## Next step
 
-Add service-dependency evidence so investigations can correlate failures across
-upstream and downstream services.
+Correlate similar historical incidents and confirmed resolutions so investigators
+can reuse evidence from earlier failures.

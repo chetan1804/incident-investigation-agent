@@ -35,6 +35,19 @@ class EvidenceCounts(BaseModel):
     logs: int
     alerts: int
     deployments: int
+    dependency_logs: int
+    dependency_alerts: int
+    dependency_deployments: int
+
+
+class DependencyServiceResponse(BaseModel):
+    service_name: str
+    criticality: str
+
+
+class DependencyContextResponse(BaseModel):
+    upstream: list[DependencyServiceResponse]
+    downstream: list[DependencyServiceResponse]
 
 
 class CorrelationWindowResponse(BaseModel):
@@ -74,6 +87,7 @@ class InvestigationResponse(BaseModel):
     scoring_method: str
     correlation_window: CorrelationWindowResponse
     evidence: EvidenceCounts
+    dependencies: DependencyContextResponse
     signals: list[str]
     ranked_signals: list[RankedSignalResponse]
     root_cause_candidates: list[RootCauseCandidateResponse]
@@ -238,3 +252,17 @@ class DeploymentCreateRequest(BaseModel):
     notes: str | None = None
     metadata_json: dict[str, Any] | None = None
     deployed_at: datetime | None = None
+
+
+class ServiceDependencyCreateRequest(BaseModel):
+    service_name: str = Field(min_length=1, max_length=255)
+    depends_on_service_name: str = Field(min_length=1, max_length=255)
+    criticality: Literal["low", "medium", "high"] = "medium"
+
+
+class ServiceDependencyResponse(BaseModel):
+    dependency_id: str
+    service_name: str
+    depends_on_service_name: str
+    criticality: str
+    created_at: datetime

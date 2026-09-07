@@ -120,6 +120,9 @@ def test_incident_api_endpoints_work(client: TestClient) -> None:
         "logs": 0,
         "alerts": 0,
         "deployments": 0,
+        "dependency_logs": 0,
+        "dependency_alerts": 0,
+        "dependency_deployments": 0,
     }
     assert investigation_response.json()["recent_deployment"] is None
 
@@ -175,7 +178,14 @@ def test_evidence_ingestion_feeds_investigation(client: TestClient) -> None:
     assert alert_response.status_code == 201
     assert deployment_response.status_code == 201
     investigation = client.get("/incidents/INC-4001/investigation").json()
-    assert investigation["evidence"] == {"logs": 1, "alerts": 1, "deployments": 1}
+    assert investigation["evidence"] == {
+        "logs": 1,
+        "alerts": 1,
+        "deployments": 1,
+        "dependency_logs": 0,
+        "dependency_alerts": 0,
+        "dependency_deployments": 0,
+    }
     assert investigation["correlation_window"]["lookback_minutes"] == 60
     assert investigation["scoring_method"] == "deterministic_v1"
     assert investigation["ranked_signals"]
@@ -206,6 +216,128 @@ def test_evidence_rejects_unknown_incident_and_service_mismatch(client: TestClie
         json={"service_name": "payments-service", "name": "error_rate", "incident_id": "INC-4002"},
     )
     assert mismatch_response.status_code == 409
+
+
+def test_service_dependencies_feed_cross_service_investigation(client: TestClient) -> None:
+    client.post(
+        "/incidents",
+        json={
+            "service_name": "checkout-service",
+            "title": "Checkout failures",
+            "summary": "Checkout requests fail",
+            "incident_id": "INC-4100",
+            "started_at": "2026-09-07T12:00:00Z",
+        },
+    )
+    upstream_response = client.post(
+        "/service-dependencies",
+        json={
+            "service_name": "checkout-service",
+            "depends_on_service_name": "payments-service",
+            "criticality": "high",
+        },
+    )
+    downstream_response = client.post(
+        "/service-dependencies",
+        json={
+            "service_name": "storefront-service",
+            "depends_on_service_name": "checkout-service",
+            "criticality": "medium",
+        },
+    )
+    assert upstream_response.status_code == 201
+    assert downstream_response.status_code == 201
+
+    upstream_alert = client.post(
+        "/alerts",
+        json={
+            "service_name": "payments-service",
+            "name": "payment_error_rate",
+            "severity": "critical",
+            "fired_at": "2026-09-07T11:58:00Z",
+        },
+    ).json()
+    upstream_log = client.post(
+        "/logs",
+        json={
+            "service_name": "payments-service",
+            "message": "Provider connection failed",
+            "level": "ERROR",
+            "timestamp": "2026-09-07T11:57:00Z",
+        },
+    ).json()
+    downstream_alert = client.post(
+        "/alerts",
+        json={
+            "service_name": "storefront-service",
+            "name": "checkout_dependency_errors",
+            "severity": "high",
+            "fired_at": "2026-09-07T12:03:00Z",
+        },
+    ).json()
+    upstream_deployment = client.post(
+        "/deployments",
+        json={
+            "service_name": "payments-service",
+            "deployment_id": "DEP-UPSTREAM-1",
+            "version": "v9.1",
+            "deployed_at": "2026-09-07T11:50:00Z",
+        },
+    ).json()
+    client.post(
+        "/logs",
+        json={
+            "service_name": "payments-service",
+            "message": "Old unrelated failure",
+            "level": "ERROR",
+            "timestamp": "2026-09-07T09:00:00Z",
+        },
+    )
+
+    investigation = client.get("/incidents/INC-4100/investigation").json()
+
+    assert investigation["dependencies"] == {
+        "upstream": [{"service_name": "payments-service", "criticality": "high"}],
+        "downstream": [
+            {"service_name": "storefront-service", "criticality": "medium"}
+        ],
+    }
+    assert investigation["evidence"]["dependency_logs"] == 1
+    assert investigation["evidence"]["dependency_alerts"] == 2
+    assert investigation["evidence"]["dependency_deployments"] == 1
+    signals_by_id = {
+        signal["signal_id"]: signal for signal in investigation["ranked_signals"]
+    }
+    assert signals_by_id[f"alert:{upstream_alert['id']}"]["kind"] == "upstream_alert"
+    assert signals_by_id[f"log:{upstream_log['id']}"]["kind"] == "upstream_log"
+    assert signals_by_id[f"alert:{downstream_alert['id']}"]["kind"] == "downstream_alert"
+    assert (
+        signals_by_id[f"deployment:{upstream_deployment['deployment_id']}"]["kind"]
+        == "upstream_deployment"
+    )
+    downstream_signal_id = f"alert:{downstream_alert['id']}"
+    assert all(
+        downstream_signal_id not in candidate["supporting_signals"]
+        for candidate in investigation["root_cause_candidates"]
+    )
+
+    dependencies = client.get("/services/checkout-service/dependencies").json()
+    assert len(dependencies) == 2
+    assert client.post(
+        "/service-dependencies",
+        json={
+            "service_name": "checkout-service",
+            "depends_on_service_name": "payments-service",
+        },
+    ).status_code == 409
+    assert client.post(
+        "/service-dependencies",
+        json={
+            "service_name": "checkout-service",
+            "depends_on_service_name": "checkout-service",
+        },
+    ).status_code == 409
+    assert client.get("/services/missing-service/dependencies").status_code == 404
 
 
 def test_duplicate_identifiers_return_conflict(client: TestClient) -> None:
