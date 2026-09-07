@@ -62,6 +62,17 @@ class InvalidRegressionGenerator(PassingRegressionGenerator):
         raise AIAnalysisError("candidate returned ungrounded output")
 
 
+class PartiallyPassingRegressionGenerator(PassingRegressionGenerator):
+    model = "regressed-model"
+    prompt_version = "candidate_prompt_v3"
+    prompt_sha256 = "c" * 64
+
+    def generate(self, **kwargs) -> AIAnalysis:
+        if kwargs["incident_id"] == "REG-002":
+            return AIAnalysis(hypotheses=[], remediation_suggestions=[])
+        return super().generate(**kwargs)
+
+
 def test_incident_api_endpoints_work(client: TestClient) -> None:
     create_response = client.post(
         "/incidents",
@@ -452,6 +463,59 @@ def test_ai_prompt_regression_persists_invalid_output_as_failure(client: TestCli
     assert run["passed_cases"] == 0
     assert run["results"][0]["failures"] == ["candidate returned ungrounded output"]
     assert run["results"][0]["output"] is None
+
+
+def test_ai_regression_comparison_and_quality_gate(client: TestClient) -> None:
+    app.dependency_overrides[get_hypothesis_generator] = PassingRegressionGenerator
+    baseline = client.post("/ai-evaluations/regression-runs").json()
+    app.dependency_overrides[get_hypothesis_generator] = PartiallyPassingRegressionGenerator
+    candidate = client.post("/ai-evaluations/regression-runs").json()
+
+    comparison_response = client.get(
+        f"/ai-evaluations/regression-runs/{candidate['run_id']}/comparison",
+        params={"baseline_run_id": baseline["run_id"]},
+    )
+
+    assert comparison_response.status_code == 200
+    comparison = comparison_response.json()
+    assert comparison["baseline_pass_rate"] == 1.0
+    assert comparison["candidate_pass_rate"] == 0.5
+    assert comparison["pass_rate_delta"] == -0.5
+    assert comparison["regressed_case_ids"] == ["alert_and_timeout_without_deployment"]
+    assert comparison["improved_case_ids"] == []
+
+    gate_url = f"/ai-evaluations/regression-runs/{candidate['run_id']}/quality-gate"
+    failed_gate = client.post(
+        gate_url,
+        json={"baseline_run_id": baseline["run_id"]},
+    )
+    assert failed_gate.status_code == 412
+    assert failed_gate.json()["passed"] is False
+    assert len(failed_gate.json()["failures"]) == 3
+
+    relaxed_gate = client.post(
+        gate_url,
+        json={
+            "baseline_run_id": baseline["run_id"],
+            "minimum_pass_rate": 0.5,
+            "maximum_pass_rate_drop": 0.5,
+            "maximum_regressed_cases": 1,
+        },
+    )
+    assert relaxed_gate.status_code == 200
+    assert relaxed_gate.json()["passed"] is True
+
+    missing_comparison = client.get(
+        f"/ai-evaluations/regression-runs/{candidate['run_id']}/comparison",
+        params={"baseline_run_id": "AIR-missing"},
+    )
+    assert missing_comparison.status_code == 404
+
+    self_comparison = client.get(
+        f"/ai-evaluations/regression-runs/{candidate['run_id']}/comparison",
+        params={"baseline_run_id": candidate["run_id"]},
+    )
+    assert self_comparison.status_code == 409
 
 
 def test_ai_analysis_requires_configuration(client: TestClient) -> None:

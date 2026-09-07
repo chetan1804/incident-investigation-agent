@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 
 from incident_investigation_agent.api.dependencies import get_hypothesis_generator, get_incident_service
@@ -9,6 +9,9 @@ from incident_investigation_agent.api.schemas import (
     AIAnalysisFeedbackResponse,
     AIAnalysisResponse,
     AIEvaluationMetricsResponse,
+    AIRegressionComparisonResponse,
+    AIRegressionQualityGateRequest,
+    AIRegressionQualityGateResponse,
     AIRegressionRunResponse,
     AlertCreateRequest,
     DeploymentCreateRequest,
@@ -30,7 +33,10 @@ from incident_investigation_agent.services.ai_analysis_service import (
     PROMPT_VERSION,
     HypothesisGenerator,
 )
-from incident_investigation_agent.services.ai_regression_service import AIRegressionService
+from incident_investigation_agent.services.ai_regression_service import (
+    AIRegressionComparisonService,
+    AIRegressionService,
+)
 from incident_investigation_agent.services.incident_service import IncidentService
 
 app = FastAPI(title="Incident Investigation Agent", version="0.1.0")
@@ -380,6 +386,48 @@ def list_ai_prompt_regression_runs(
         _serialize_ai_regression_run(run)
         for run in incident_service.list_ai_regression_runs(limit=limit)
     ]
+
+
+@app.get(
+    "/ai-evaluations/regression-runs/{candidate_run_id}/comparison",
+    response_model=AIRegressionComparisonResponse,
+)
+def compare_ai_prompt_regression_runs(
+    candidate_run_id: str,
+    baseline_run_id: str = Query(min_length=1, max_length=64),
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> dict:
+    comparison_service = AIRegressionComparisonService(incident_service.repository)
+    return comparison_service.compare(
+        candidate_run_id=candidate_run_id,
+        baseline_run_id=baseline_run_id,
+    )
+
+
+@app.post(
+    "/ai-evaluations/regression-runs/{candidate_run_id}/quality-gate",
+    response_model=AIRegressionQualityGateResponse,
+    responses={
+        status.HTTP_412_PRECONDITION_FAILED: {
+            "model": AIRegressionQualityGateResponse,
+            "description": "The candidate run failed one or more quality thresholds.",
+        }
+    },
+)
+def evaluate_ai_prompt_regression_quality_gate(
+    candidate_run_id: str,
+    payload: AIRegressionQualityGateRequest,
+    response: Response,
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> dict:
+    comparison_service = AIRegressionComparisonService(incident_service.repository)
+    result = comparison_service.evaluate_quality_gate(
+        candidate_run_id=candidate_run_id,
+        **payload.model_dump(),
+    )
+    if not result["passed"]:
+        response.status_code = status.HTTP_412_PRECONDITION_FAILED
+    return result
 
 
 @app.get("/services/{service_name}/deployments")

@@ -178,6 +178,38 @@ class AIRegressionRunResponse(BaseModel):
     created_at: datetime
 
 
+class AIRegressionComparisonResponse(BaseModel):
+    candidate_run_id: str
+    baseline_run_id: str
+    dataset_version: str
+    candidate_pass_rate: float = Field(ge=0, le=1)
+    baseline_pass_rate: float = Field(ge=0, le=1)
+    pass_rate_delta: float = Field(ge=-1, le=1)
+    regressed_case_ids: list[str]
+    improved_case_ids: list[str]
+    unchanged_failed_case_ids: list[str]
+
+
+class AIRegressionQualityGateRequest(BaseModel):
+    baseline_run_id: str = Field(min_length=1, max_length=64)
+    minimum_pass_rate: float = Field(default=1.0, ge=0, le=1)
+    maximum_pass_rate_drop: float = Field(default=0.0, ge=0, le=1)
+    maximum_regressed_cases: int = Field(default=0, ge=0)
+
+
+class AIRegressionQualityGateThresholdsResponse(BaseModel):
+    minimum_pass_rate: float
+    maximum_pass_rate_drop: float
+    maximum_regressed_cases: int
+
+
+class AIRegressionQualityGateResponse(BaseModel):
+    passed: bool
+    failures: list[str]
+    thresholds: AIRegressionQualityGateThresholdsResponse
+    comparison: AIRegressionComparisonResponse
+
+
 class LogCreateRequest(BaseModel):
     service_name: str = Field(min_length=1, max_length=255)
     message: str = Field(min_length=1)

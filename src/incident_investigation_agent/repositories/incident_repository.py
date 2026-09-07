@@ -350,6 +350,11 @@ class IncidentRepository:
         )
         return list(self.session.scalars(statement).all())
 
+    def get_ai_regression_run(self, run_id: str) -> AIRegressionRun | None:
+        return self.session.scalar(
+            select(AIRegressionRun).where(AIRegressionRun.run_id == run_id)
+        )
+
     def _resolve_evidence_context(
         self, service_name: str, incident_id: str | None
     ) -> tuple[Service, Incident | None]:

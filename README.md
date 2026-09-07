@@ -137,9 +137,34 @@ Regression datasets live in
 `src/incident_investigation_agent/evaluation_datasets/` and are included in the
 installed package.
 
+Compare a candidate run with an earlier run of the same dataset:
+
+```text
+GET /ai-evaluations/regression-runs/AIR-candidate/comparison?baseline_run_id=AIR-baseline
+```
+
+The comparison reports pass-rate changes and the case IDs that regressed,
+improved, or remained failing. Runs from different dataset versions cannot be
+compared.
+
+Use the quality gate from CI with strict defaults (100% pass rate, no pass-rate
+drop, and no regressed cases):
+
+```text
+POST /ai-evaluations/regression-runs/AIR-candidate/quality-gate
+
+{
+  "baseline_run_id": "AIR-baseline"
+}
+```
+
+The endpoint returns HTTP 200 when the gate passes and HTTP 412 when it fails.
+Its request can override `minimum_pass_rate`, `maximum_pass_rate_drop`, and
+`maximum_regressed_cases` when a workflow needs controlled tolerances.
+
 The existing `GET /incidents/{incident_id}/investigation` remains deterministic and does not require an API key. AI confidence values are model judgments, not calibrated probabilities, and remediation suggestions should be reviewed by an operator before execution.
 
 ## Next step
 
-Add regression quality gates and run-to-run comparisons so prompt candidates can
-be blocked automatically when baseline performance declines.
+Add service-dependency evidence so investigations can correlate failures across
+upstream and downstream services.
