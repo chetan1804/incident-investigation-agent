@@ -59,6 +59,8 @@ class EvidenceCounts(BaseModel):
     dependency_alerts: int
     dependency_deployments: int
     historical_incidents: int
+    trace_paths: int
+    trace_logs: int
 
 
 class DependencyServiceResponse(BaseModel):
@@ -113,6 +115,26 @@ class HistoricalIncidentResponse(BaseModel):
     matching_terms: list[str]
 
 
+class TraceLogResponse(BaseModel):
+    log_id: int
+    service_name: str
+    timestamp: datetime
+    level: str
+    message: str
+
+
+class TracePathResponse(BaseModel):
+    trace_id: str
+    services: list[str]
+    started_at: datetime
+    ended_at: datetime
+    log_count: int
+    error_count: int
+    confidence: float = Field(ge=0, le=1)
+    entries_truncated: bool
+    entries: list[TraceLogResponse]
+
+
 class InvestigationResponse(BaseModel):
     incident_id: str
     summary: str
@@ -125,6 +147,7 @@ class InvestigationResponse(BaseModel):
     signals: list[str]
     ranked_signals: list[RankedSignalResponse]
     historical_incidents: list[HistoricalIncidentResponse]
+    trace_paths: list[TracePathResponse]
     root_cause_candidates: list[RootCauseCandidateResponse]
     recent_deployment: RecentDeploymentResponse | None
 

@@ -124,6 +124,8 @@ def test_incident_api_endpoints_work(client: TestClient) -> None:
         "dependency_alerts": 0,
         "dependency_deployments": 0,
         "historical_incidents": 0,
+        "trace_paths": 0,
+        "trace_logs": 0,
     }
     assert investigation_response.json()["recent_deployment"] is None
 
@@ -187,9 +189,11 @@ def test_evidence_ingestion_feeds_investigation(client: TestClient) -> None:
         "dependency_alerts": 0,
         "dependency_deployments": 0,
         "historical_incidents": 0,
+        "trace_paths": 0,
+        "trace_logs": 0,
     }
     assert investigation["correlation_window"]["lookback_minutes"] == 60
-    assert investigation["scoring_method"] == "deterministic_v2"
+    assert investigation["scoring_method"] == "deterministic_v3"
     assert investigation["ranked_signals"]
     assert investigation["root_cause_candidates"]
     assert client.get(
@@ -469,6 +473,93 @@ def test_confirmed_resolutions_feed_historical_incident_similarity(
         },
     )
     assert invalid_timestamp.status_code == 409
+
+
+def test_trace_ids_reconstruct_cross_service_request_paths(client: TestClient) -> None:
+    client.post(
+        "/incidents",
+        json={
+            "service_name": "checkout-service",
+            "title": "Checkout latency",
+            "summary": "Checkout requests are timing out",
+            "incident_id": "INC-TRACE-1",
+            "started_at": "2026-09-08T12:00:00Z",
+        },
+    )
+    client.post(
+        "/logs",
+        json={
+            "service_name": "database-service",
+            "message": "Query deadline exceeded",
+            "level": "ERROR",
+            "trace_id": "trace-checkout-1",
+            "timestamp": "2026-09-08T11:58:00Z",
+        },
+    )
+    client.post(
+        "/logs",
+        json={
+            "service_name": "inventory-service",
+            "message": "Loading inventory",
+            "level": "INFO",
+            "trace_id": "trace-checkout-1",
+            "timestamp": "2026-09-08T11:59:00Z",
+        },
+    )
+    client.post(
+        "/logs",
+        json={
+            "service_name": "checkout-service",
+            "incident_id": "INC-TRACE-1",
+            "message": "Request timed out",
+            "level": "ERROR",
+            "trace_id": "trace-checkout-1",
+            "timestamp": "2026-09-08T12:01:00Z",
+        },
+    )
+    client.post(
+        "/logs",
+        json={
+            "service_name": "unrelated-service",
+            "message": "Unrelated request",
+            "level": "ERROR",
+            "trace_id": "trace-unrelated",
+            "timestamp": "2026-09-08T12:00:00Z",
+        },
+    )
+
+    investigation = client.get("/incidents/INC-TRACE-1/investigation").json()
+
+    assert investigation["evidence"]["trace_paths"] == 1
+    assert investigation["evidence"]["trace_logs"] == 3
+    path = investigation["trace_paths"][0]
+    assert path["trace_id"] == "trace-checkout-1"
+    assert path["services"] == [
+        "database-service",
+        "inventory-service",
+        "checkout-service",
+    ]
+    assert path["log_count"] == 3
+    assert path["error_count"] == 2
+    assert path["entries_truncated"] is False
+    assert [entry["service_name"] for entry in path["entries"]] == path["services"]
+    trace_signal = next(
+        signal
+        for signal in investigation["ranked_signals"]
+        if signal["signal_id"] == "trace:trace-checkout-1"
+    )
+    assert trace_signal["kind"] == "trace_path"
+    assert any(
+        "trace:trace-checkout-1" in candidate["supporting_signals"]
+        for candidate in investigation["root_cause_candidates"]
+    )
+
+    without_traces = client.get(
+        "/incidents/INC-TRACE-1/investigation",
+        params={"trace_path_limit": 0},
+    ).json()
+    assert without_traces["trace_paths"] == []
+    assert without_traces["evidence"]["trace_logs"] == 0
 
 
 def test_duplicate_identifiers_return_conflict(client: TestClient) -> None:

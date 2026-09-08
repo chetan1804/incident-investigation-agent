@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     correlation_lookahead_minutes: int = Field(default=30, ge=0, le=1440)
     historical_incident_limit: int = Field(default=5, ge=0, le=20)
     historical_similarity_threshold: float = Field(default=0.2, ge=0, le=1)
+    trace_path_limit: int = Field(default=10, ge=0, le=50)
     openai_api_key: str | None = Field(default=None, repr=False)
     openai_model: str = Field(default="gpt-5-mini", min_length=1)
     ai_max_ranked_signals: int = Field(default=20, ge=1, le=100)

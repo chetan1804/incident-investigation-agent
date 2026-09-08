@@ -9,5 +9,6 @@ def test_default_settings_are_loaded() -> None:
     assert settings.correlation_lookahead_minutes >= 0
     assert settings.historical_incident_limit >= 0
     assert 0 <= settings.historical_similarity_threshold <= 1
+    assert settings.trace_path_limit >= 0
     assert settings.openai_model
     assert settings.ai_max_ranked_signals > 0

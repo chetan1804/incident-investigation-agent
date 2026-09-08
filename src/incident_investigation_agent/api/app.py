@@ -314,6 +314,7 @@ def investigate_incident(
     historical_similarity_threshold: float = Query(
         default=settings.historical_similarity_threshold, ge=0, le=1
     ),
+    trace_path_limit: int = Query(default=settings.trace_path_limit, ge=0, le=50),
     incident_service: IncidentService = Depends(get_incident_service),
 ) -> dict:
     investigation = incident_service.investigate(
@@ -322,6 +323,7 @@ def investigate_incident(
         lookahead_minutes=lookahead_minutes,
         historical_incident_limit=historical_incident_limit,
         historical_similarity_threshold=historical_similarity_threshold,
+        trace_path_limit=trace_path_limit,
     )
     if investigation is None:
         raise HTTPException(status_code=404, detail="Incident not found")
@@ -343,6 +345,7 @@ def analyze_incident_with_ai(
     historical_similarity_threshold: float = Query(
         default=settings.historical_similarity_threshold, ge=0, le=1
     ),
+    trace_path_limit: int = Query(default=settings.trace_path_limit, ge=0, le=50),
     incident_service: IncidentService = Depends(get_incident_service),
     hypothesis_generator: HypothesisGenerator = Depends(get_hypothesis_generator),
 ) -> dict:
@@ -352,6 +355,7 @@ def analyze_incident_with_ai(
         lookahead_minutes=lookahead_minutes,
         historical_incident_limit=historical_incident_limit,
         historical_similarity_threshold=historical_similarity_threshold,
+        trace_path_limit=trace_path_limit,
     )
     if investigation is None:
         raise HTTPException(status_code=404, detail="Incident not found")

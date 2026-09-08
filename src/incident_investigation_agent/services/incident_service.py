@@ -210,6 +210,7 @@ class IncidentService:
         lookahead_minutes: int = 30,
         historical_incident_limit: int = 5,
         historical_similarity_threshold: float = 0.2,
+        trace_path_limit: int = 10,
     ) -> dict[str, Any] | None:
         incident = self.get_incident(incident_id)
         if incident is None:
@@ -325,6 +326,34 @@ class IncidentService:
             lookback_minutes=lookback_minutes,
             lookahead_minutes=lookahead_minutes,
         )
+        trace_paths = self._build_trace_paths(
+            incident_logs=logs,
+            window_start=window_start,
+            window_end=window_end,
+            incident_started_at=started_at,
+            lookback_minutes=lookback_minutes,
+            lookahead_minutes=lookahead_minutes,
+            limit=trace_path_limit,
+        )
+        ranked_signals.extend(
+            {
+                "signal_id": f"trace:{path['trace_id']}",
+                "kind": (
+                    "trace_path" if path["error_count"] else "trace_path_context"
+                ),
+                "description": (
+                    f"Trace crossed {' -> '.join(path['services'])} with "
+                    f"{path['error_count']} error logs"
+                ),
+                "observed_at": path["started_at"],
+                "confidence": path["confidence"],
+                "reasoning": (
+                    f"Shared trace ID links {path['log_count']} logs across "
+                    f"{len(path['services'])} services in the incident window."
+                ),
+            }
+            for path in trace_paths
+        )
         historical_incidents = self._find_similar_historical_incidents(
             incident=incident,
             current_logs=logs,
@@ -355,13 +384,17 @@ class IncidentService:
             f"historical-incident:{item['incident_id']} ({item['similarity_score']:.2f})"
             for item in historical_incidents
         )
+        signals.extend(
+            f"trace-path:{path['trace_id']} ({' -> '.join(path['services'])})"
+            for path in trace_paths
+        )
 
         return {
             "incident_id": incident.incident_id,
             "summary": incident.summary,
             "severity": incident.severity.value,
             "status": incident.status.value,
-            "scoring_method": "deterministic_v2",
+            "scoring_method": "deterministic_v3",
             "correlation_window": {
                 "started_at": started_at.isoformat(),
                 "window_start": window_start.isoformat(),
@@ -377,6 +410,8 @@ class IncidentService:
                 "dependency_alerts": len(dependency_alerts),
                 "dependency_deployments": len(dependency_deployments),
                 "historical_incidents": len(historical_incidents),
+                "trace_paths": len(trace_paths),
+                "trace_logs": sum(path["log_count"] for path in trace_paths),
             },
             "dependencies": {
                 "upstream": [
@@ -391,6 +426,7 @@ class IncidentService:
             "signals": signals,
             "ranked_signals": ranked_signals,
             "historical_incidents": historical_incidents,
+            "trace_paths": trace_paths,
             "root_cause_candidates": self._build_root_cause_candidates(ranked_signals),
             "recent_deployment": (
                 {
@@ -402,6 +438,79 @@ class IncidentService:
                 else None
             ),
         }
+
+    def _build_trace_paths(
+        self,
+        *,
+        incident_logs: list[LogEntry],
+        window_start: datetime,
+        window_end: datetime,
+        incident_started_at: datetime,
+        lookback_minutes: int,
+        lookahead_minutes: int,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        if limit == 0:
+            return []
+        trace_ids = list(
+            dict.fromkeys(log.trace_id for log in incident_logs if log.trace_id)
+        )[:100]
+        traced_logs = self.repository.get_logs_for_trace_ids(
+            trace_ids,
+            window_start=window_start,
+            window_end=window_end,
+        )
+        logs_by_trace: dict[str, list[LogEntry]] = {}
+        for log in traced_logs:
+            if log.trace_id:
+                logs_by_trace.setdefault(log.trace_id, []).append(log)
+
+        paths: list[dict[str, Any]] = []
+        for trace_id, trace_logs in logs_by_trace.items():
+            services = list(dict.fromkeys(log.service.name for log in trace_logs))
+            if len(services) < 2:
+                continue
+            error_count = sum(self._is_error_log(log) for log in trace_logs)
+            maximum_proximity = max(
+                self._proximity(
+                    log.timestamp,
+                    incident_started_at,
+                    lookback_minutes,
+                    lookahead_minutes,
+                )[0]
+                for log in trace_logs
+            )
+            error_ratio = error_count / len(trace_logs)
+            confidence = round(
+                min(0.95, 0.35 + 0.3 * maximum_proximity + 0.25 * error_ratio),
+                2,
+            )
+            entries = [
+                {
+                    "log_id": log.id,
+                    "service_name": log.service.name,
+                    "timestamp": self._as_utc(log.timestamp).isoformat(),
+                    "level": log.level,
+                    "message": log.message,
+                }
+                for log in trace_logs[:100]
+            ]
+            paths.append(
+                {
+                    "trace_id": trace_id,
+                    "services": services,
+                    "started_at": self._as_utc(trace_logs[0].timestamp).isoformat(),
+                    "ended_at": self._as_utc(trace_logs[-1].timestamp).isoformat(),
+                    "log_count": len(trace_logs),
+                    "error_count": error_count,
+                    "confidence": confidence,
+                    "entries_truncated": len(trace_logs) > len(entries),
+                    "entries": entries,
+                }
+            )
+        paths.sort(key=lambda path: path["started_at"])
+        paths.sort(key=lambda path: path["confidence"], reverse=True)
+        return paths[:limit]
 
     def _find_similar_historical_incidents(
         self,
@@ -646,6 +755,7 @@ class IncidentService:
             "upstream_alert": "A failing upstream dependency may be contributing to the incident",
             "upstream_log": "A failure in an upstream dependency may be contributing to the incident",
             "upstream_deployment": "A recent upstream deployment may be contributing to the incident",
+            "trace_path": "A traced cross-service request path may identify the failing component",
         }
         candidates: list[dict[str, Any]] = []
         seen_kinds: set[str] = set()

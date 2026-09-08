@@ -214,6 +214,27 @@ class IncidentRepository:
         )
         return list(self.session.scalars(statement).all())
 
+    def get_logs_for_trace_ids(
+        self,
+        trace_ids: list[str],
+        *,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> list[LogEntry]:
+        if not trace_ids:
+            return []
+        statement = (
+            select(LogEntry)
+            .where(
+                LogEntry.trace_id.in_(trace_ids),
+                LogEntry.timestamp >= window_start,
+                LogEntry.timestamp <= window_end,
+            )
+            .options(selectinload(LogEntry.service))
+            .order_by(LogEntry.timestamp.asc(), LogEntry.id.asc())
+        )
+        return list(self.session.scalars(statement).all())
+
     def get_alerts_for_service(
         self,
         service_name: str,

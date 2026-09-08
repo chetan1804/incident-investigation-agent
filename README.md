@@ -19,6 +19,7 @@ Build an agentic AI system that helps engineers investigate production incidents
 - Run and persist automated prompt regressions against a versioned dataset.
 - Correlate time-windowed evidence from upstream and downstream service dependencies.
 - Reuse confirmed resolutions from deterministically matched historical incidents.
+- Reconstruct cross-service request paths from shared trace IDs.
 - Manage schema changes with Alembic migrations.
 
 ## Structure
@@ -77,7 +78,7 @@ Override the window per investigation request:
 GET /incidents/INC-4001/investigation?lookback_minutes=120&lookahead_minutes=45
 ```
 
-The defaults can be changed with `CORRELATION_LOOKBACK_MINUTES` and `CORRELATION_LOOKAHEAD_MINUTES`. Confidence values currently use the transparent `deterministic_v2` heuristic based on severity, proximity, dependency context, and historical similarity; they are ranking scores, not statistically calibrated probabilities.
+The defaults can be changed with `CORRELATION_LOOKBACK_MINUTES` and `CORRELATION_LOOKAHEAD_MINUTES`. Confidence values currently use the transparent `deterministic_v3` heuristic based on severity, proximity, dependency context, historical similarity, and trace linkage; they are ranking scores, not statistically calibrated probabilities.
 
 ## Service dependencies
 
@@ -121,6 +122,18 @@ root cause, and confirmed resolution. They are also supplied to AI analysis as
 grounded `historical_incident` signals. Tune or disable matching per request with
 `historical_similarity_threshold` and `historical_incident_limit`; their defaults
 come from `HISTORICAL_SIMILARITY_THRESHOLD` and `HISTORICAL_INCIDENT_LIMIT`.
+
+## Trace correlation
+
+Include a `trace_id` when ingesting logs. If an incident-linked trace appears in
+logs from multiple services during the correlation window, the investigation
+returns an ordered trace path with its services, timestamps, log entries, and
+error count. Paths containing errors are ranked as possible causal evidence;
+paths without errors remain contextual evidence. Trace signals are also available
+to AI analysis through grounded IDs such as `trace:trace-checkout-1`.
+
+Use `trace_path_limit=0` on an investigation request to disable trace expansion,
+or set the default with `TRACE_PATH_LIMIT`.
 
 ## AI-assisted analysis
 
@@ -211,5 +224,5 @@ The existing `GET /incidents/{incident_id}/investigation` remains deterministic 
 
 ## Next step
 
-Add trace-aware correlation so logs spanning multiple services can be grouped into
-a single request path during an investigation.
+Add metric-anomaly ingestion and correlation so investigations can combine
+time-series symptoms with logs, alerts, deployments, and traces.
