@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+import re
 from typing import Any
 
 from incident_investigation_agent.models.incident_models import (
@@ -50,6 +51,23 @@ class IncidentService:
 
     def list_incidents(self, limit: int = 50) -> list[Incident]:
         return self.repository.list_incidents(limit=limit)
+
+    def confirm_incident_resolution(
+        self,
+        *,
+        incident_id: str,
+        root_cause: str,
+        resolution_summary: str,
+        resolution_confirmed_by: str,
+        resolved_at: datetime | None = None,
+    ) -> Incident:
+        return self.repository.confirm_incident_resolution(
+            incident_id=incident_id,
+            root_cause=root_cause,
+            resolution_summary=resolution_summary,
+            resolution_confirmed_by=resolution_confirmed_by,
+            resolved_at=resolved_at or datetime.now(UTC),
+        )
 
     def get_logs(self, incident_id: str) -> list[LogEntry]:
         return self.repository.get_logs_for_incident(incident_id)
@@ -190,6 +208,8 @@ class IncidentService:
         *,
         lookback_minutes: int = 60,
         lookahead_minutes: int = 30,
+        historical_incident_limit: int = 5,
+        historical_similarity_threshold: float = 0.2,
     ) -> dict[str, Any] | None:
         incident = self.get_incident(incident_id)
         if incident is None:
@@ -305,13 +325,43 @@ class IncidentService:
             lookback_minutes=lookback_minutes,
             lookahead_minutes=lookahead_minutes,
         )
+        historical_incidents = self._find_similar_historical_incidents(
+            incident=incident,
+            current_logs=logs,
+            current_alerts=alerts,
+            limit=historical_incident_limit,
+            minimum_similarity=historical_similarity_threshold,
+        )
+        ranked_signals.extend(
+            {
+                "signal_id": f"incident:{item['incident_id']}",
+                "kind": "historical_incident",
+                "description": (
+                    f"{item['incident_id']}: {item['root_cause']}; resolution: "
+                    f"{item['resolution_summary']}"
+                ),
+                "observed_at": item["resolved_at"],
+                "confidence": item["similarity_score"],
+                "reasoning": (
+                    f"Resolved incident shares terms: {', '.join(item['matching_terms'])}."
+                ),
+            }
+            for item in historical_incidents
+        )
+        ranked_signals.sort(
+            key=lambda signal: (-signal["confidence"], signal["observed_at"])
+        )
+        signals.extend(
+            f"historical-incident:{item['incident_id']} ({item['similarity_score']:.2f})"
+            for item in historical_incidents
+        )
 
         return {
             "incident_id": incident.incident_id,
             "summary": incident.summary,
             "severity": incident.severity.value,
             "status": incident.status.value,
-            "scoring_method": "deterministic_v1",
+            "scoring_method": "deterministic_v2",
             "correlation_window": {
                 "started_at": started_at.isoformat(),
                 "window_start": window_start.isoformat(),
@@ -326,6 +376,7 @@ class IncidentService:
                 "dependency_logs": len(dependency_logs),
                 "dependency_alerts": len(dependency_alerts),
                 "dependency_deployments": len(dependency_deployments),
+                "historical_incidents": len(historical_incidents),
             },
             "dependencies": {
                 "upstream": [
@@ -339,6 +390,7 @@ class IncidentService:
             },
             "signals": signals,
             "ranked_signals": ranked_signals,
+            "historical_incidents": historical_incidents,
             "root_cause_candidates": self._build_root_cause_candidates(ranked_signals),
             "recent_deployment": (
                 {
@@ -349,6 +401,96 @@ class IncidentService:
                 if deployments
                 else None
             ),
+        }
+
+    def _find_similar_historical_incidents(
+        self,
+        *,
+        incident: Incident,
+        current_logs: list[LogEntry],
+        current_alerts: list[Alert],
+        limit: int,
+        minimum_similarity: float,
+    ) -> list[dict[str, Any]]:
+        if limit == 0:
+            return []
+        current_terms = self._incident_terms(incident, current_logs, current_alerts)
+        if not current_terms:
+            return []
+
+        matches: list[dict[str, Any]] = []
+        candidates = self.repository.list_resolved_incidents_before(incident=incident)
+        for candidate in candidates:
+            candidate_terms = self._incident_terms(
+                candidate,
+                candidate.logs,
+                candidate.alerts,
+            )
+            matching_terms = sorted(current_terms & candidate_terms)
+            if not matching_terms:
+                continue
+            union = current_terms | candidate_terms
+            text_similarity = len(matching_terms) / len(union)
+            similarity = 0.8 * text_similarity
+            if candidate.service_id == incident.service_id:
+                similarity += 0.15
+            if candidate.severity == incident.severity:
+                similarity += 0.05
+            similarity = round(min(similarity, 1.0), 4)
+            if similarity < minimum_similarity:
+                continue
+            matches.append(
+                {
+                    "incident_id": candidate.incident_id,
+                    "title": candidate.title,
+                    "service_name": candidate.service.name,
+                    "severity": candidate.severity.value,
+                    "resolved_at": self._as_utc(candidate.resolved_at).isoformat(),
+                    "root_cause": candidate.root_cause,
+                    "resolution_summary": candidate.resolution_summary,
+                    "resolution_confirmed_by": candidate.resolution_confirmed_by,
+                    "similarity_score": similarity,
+                    "matching_terms": matching_terms,
+                }
+            )
+        matches.sort(key=lambda item: item["resolved_at"], reverse=True)
+        matches.sort(key=lambda item: item["similarity_score"], reverse=True)
+        return matches[:limit]
+
+    @classmethod
+    def _incident_terms(
+        cls,
+        incident: Incident,
+        logs: list[LogEntry],
+        alerts: list[Alert],
+    ) -> set[str]:
+        text_parts = [incident.title, incident.summary]
+        text_parts.extend(alert.name.replace("_", " ") for alert in alerts)
+        text_parts.extend(log.message for log in logs if cls._is_error_log(log))
+        stop_words = {
+            "after",
+            "and",
+            "are",
+            "before",
+            "during",
+            "error",
+            "errors",
+            "failed",
+            "failure",
+            "failures",
+            "for",
+            "from",
+            "incident",
+            "increased",
+            "requests",
+            "service",
+            "the",
+            "with",
+        }
+        return {
+            token
+            for token in re.findall(r"[a-z0-9]+", " ".join(text_parts).lower())
+            if len(token) >= 3 and token not in stop_words
         }
 
     def _rank_signals(

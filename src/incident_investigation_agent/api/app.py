@@ -16,6 +16,8 @@ from incident_investigation_agent.api.schemas import (
     AlertCreateRequest,
     DeploymentCreateRequest,
     IncidentCreateRequest,
+    IncidentResolutionCreateRequest,
+    IncidentResolutionResponse,
     IncidentResponse,
     InvestigationResponse,
     LogCreateRequest,
@@ -126,6 +128,10 @@ def list_incidents(
             status=incident.status,
             service_name=incident.service.name,
             started_at=incident.started_at,
+            resolved_at=incident.resolved_at,
+            root_cause=incident.root_cause,
+            resolution_summary=incident.resolution_summary,
+            resolution_confirmed_by=incident.resolution_confirmed_by,
         )
         for incident in incidents
     ]
@@ -226,6 +232,34 @@ def get_incident(
         "status": incident.status.value,
         "service_name": incident.service.name,
         "started_at": incident.started_at,
+        "resolved_at": incident.resolved_at,
+        "root_cause": incident.root_cause,
+        "resolution_summary": incident.resolution_summary,
+        "resolution_confirmed_by": incident.resolution_confirmed_by,
+    }
+
+
+@app.post(
+    "/incidents/{incident_id}/resolution",
+    response_model=IncidentResolutionResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def confirm_incident_resolution(
+    incident_id: str,
+    payload: IncidentResolutionCreateRequest,
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> dict:
+    incident = incident_service.confirm_incident_resolution(
+        incident_id=incident_id,
+        **payload.model_dump(),
+    )
+    return {
+        "incident_id": incident.incident_id,
+        "status": incident.status,
+        "root_cause": incident.root_cause,
+        "resolution_summary": incident.resolution_summary,
+        "resolution_confirmed_by": incident.resolution_confirmed_by,
+        "resolved_at": incident.resolved_at,
     }
 
 
@@ -274,12 +308,20 @@ def investigate_incident(
     incident_id: str,
     lookback_minutes: int = Query(default=settings.correlation_lookback_minutes, ge=1, le=1440),
     lookahead_minutes: int = Query(default=settings.correlation_lookahead_minutes, ge=0, le=1440),
+    historical_incident_limit: int = Query(
+        default=settings.historical_incident_limit, ge=0, le=20
+    ),
+    historical_similarity_threshold: float = Query(
+        default=settings.historical_similarity_threshold, ge=0, le=1
+    ),
     incident_service: IncidentService = Depends(get_incident_service),
 ) -> dict:
     investigation = incident_service.investigate(
         incident_id,
         lookback_minutes=lookback_minutes,
         lookahead_minutes=lookahead_minutes,
+        historical_incident_limit=historical_incident_limit,
+        historical_similarity_threshold=historical_similarity_threshold,
     )
     if investigation is None:
         raise HTTPException(status_code=404, detail="Incident not found")
@@ -295,6 +337,12 @@ def analyze_incident_with_ai(
     incident_id: str,
     lookback_minutes: int = Query(default=settings.correlation_lookback_minutes, ge=1, le=1440),
     lookahead_minutes: int = Query(default=settings.correlation_lookahead_minutes, ge=0, le=1440),
+    historical_incident_limit: int = Query(
+        default=settings.historical_incident_limit, ge=0, le=20
+    ),
+    historical_similarity_threshold: float = Query(
+        default=settings.historical_similarity_threshold, ge=0, le=1
+    ),
     incident_service: IncidentService = Depends(get_incident_service),
     hypothesis_generator: HypothesisGenerator = Depends(get_hypothesis_generator),
 ) -> dict:
@@ -302,6 +350,8 @@ def analyze_incident_with_ai(
         incident_id,
         lookback_minutes=lookback_minutes,
         lookahead_minutes=lookahead_minutes,
+        historical_incident_limit=historical_incident_limit,
+        historical_similarity_threshold=historical_similarity_threshold,
     )
     if investigation is None:
         raise HTTPException(status_code=404, detail="Incident not found")

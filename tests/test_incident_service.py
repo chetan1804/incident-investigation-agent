@@ -136,6 +136,7 @@ def test_investigation_only_correlates_evidence_inside_time_window(db_session: S
         "dependency_logs": 0,
         "dependency_alerts": 0,
         "dependency_deployments": 0,
+        "historical_incidents": 0,
     }
     assert investigation["recent_deployment"]["deployment_id"] == "DEPLOY-IN-WINDOW"
     assert all("TOO-OLD" not in signal["description"] for signal in investigation["ranked_signals"])

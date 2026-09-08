@@ -29,6 +29,26 @@ class IncidentResponse(BaseModel):
     status: IncidentStatus
     service_name: str
     started_at: datetime
+    resolved_at: datetime | None = None
+    root_cause: str | None = None
+    resolution_summary: str | None = None
+    resolution_confirmed_by: str | None = None
+
+
+class IncidentResolutionCreateRequest(BaseModel):
+    root_cause: str = Field(min_length=1, max_length=4000)
+    resolution_summary: str = Field(min_length=1, max_length=4000)
+    resolution_confirmed_by: str = Field(min_length=1, max_length=255)
+    resolved_at: datetime | None = None
+
+
+class IncidentResolutionResponse(BaseModel):
+    incident_id: str
+    status: IncidentStatus
+    root_cause: str
+    resolution_summary: str
+    resolution_confirmed_by: str
+    resolved_at: datetime
 
 
 class EvidenceCounts(BaseModel):
@@ -38,6 +58,7 @@ class EvidenceCounts(BaseModel):
     dependency_logs: int
     dependency_alerts: int
     dependency_deployments: int
+    historical_incidents: int
 
 
 class DependencyServiceResponse(BaseModel):
@@ -79,6 +100,19 @@ class RecentDeploymentResponse(BaseModel):
     deployed_at: datetime
 
 
+class HistoricalIncidentResponse(BaseModel):
+    incident_id: str
+    title: str
+    service_name: str
+    severity: IncidentSeverity
+    resolved_at: datetime
+    root_cause: str
+    resolution_summary: str
+    resolution_confirmed_by: str
+    similarity_score: float = Field(ge=0, le=1)
+    matching_terms: list[str]
+
+
 class InvestigationResponse(BaseModel):
     incident_id: str
     summary: str
@@ -90,6 +124,7 @@ class InvestigationResponse(BaseModel):
     dependencies: DependencyContextResponse
     signals: list[str]
     ranked_signals: list[RankedSignalResponse]
+    historical_incidents: list[HistoricalIncidentResponse]
     root_cause_candidates: list[RootCauseCandidateResponse]
     recent_deployment: RecentDeploymentResponse | None
 

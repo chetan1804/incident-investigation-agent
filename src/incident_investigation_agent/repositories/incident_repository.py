@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -19,6 +19,7 @@ from incident_investigation_agent.models.incident_models import (
     Alert,
     Deployment,
     Incident,
+    IncidentStatus,
     LogEntry,
     Service,
     ServiceDependency,
@@ -79,6 +80,66 @@ class IncidentRepository:
 
     def list_incidents(self, limit: int = 50) -> list[Incident]:
         statement = select(Incident).order_by(Incident.created_at.desc()).limit(limit)
+        return list(self.session.scalars(statement).all())
+
+    def confirm_incident_resolution(
+        self,
+        *,
+        incident_id: str,
+        root_cause: str,
+        resolution_summary: str,
+        resolution_confirmed_by: str,
+        resolved_at: datetime,
+    ) -> Incident:
+        incident = self.get_incident_by_id(incident_id)
+        if incident is None:
+            raise ResourceNotFoundError(f"Incident '{incident_id}' was not found")
+        if incident.resolution_summary is not None:
+            raise ResourceConflictError(
+                f"Incident '{incident_id}' already has a confirmed resolution"
+            )
+        incident_started_at = incident.started_at
+        if incident_started_at.tzinfo is None:
+            incident_started_at = incident_started_at.replace(tzinfo=UTC)
+        if resolved_at.tzinfo is None:
+            resolved_at = resolved_at.replace(tzinfo=UTC)
+        if resolved_at < incident_started_at:
+            raise ResourceConflictError("Resolution timestamp cannot precede incident start")
+
+        incident.status = IncidentStatus.RESOLVED
+        incident.root_cause = root_cause
+        incident.resolution_summary = resolution_summary
+        incident.resolution_confirmed_by = resolution_confirmed_by
+        incident.resolved_at = resolved_at
+        self.session.commit()
+        self.session.refresh(incident)
+        return incident
+
+    def list_resolved_incidents_before(
+        self,
+        *,
+        incident: Incident,
+        limit: int = 100,
+    ) -> list[Incident]:
+        statement = (
+            select(Incident)
+            .where(
+                Incident.id != incident.id,
+                Incident.started_at < incident.started_at,
+                Incident.status.in_([IncidentStatus.RESOLVED, IncidentStatus.CLOSED]),
+                Incident.resolution_summary.is_not(None),
+                Incident.root_cause.is_not(None),
+                Incident.resolved_at.is_not(None),
+                Incident.resolution_confirmed_by.is_not(None),
+            )
+            .options(
+                selectinload(Incident.service),
+                selectinload(Incident.logs),
+                selectinload(Incident.alerts),
+            )
+            .order_by(Incident.started_at.desc())
+            .limit(limit)
+        )
         return list(self.session.scalars(statement).all())
 
     def create_service_dependency(

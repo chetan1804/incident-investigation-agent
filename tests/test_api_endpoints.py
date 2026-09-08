@@ -123,6 +123,7 @@ def test_incident_api_endpoints_work(client: TestClient) -> None:
         "dependency_logs": 0,
         "dependency_alerts": 0,
         "dependency_deployments": 0,
+        "historical_incidents": 0,
     }
     assert investigation_response.json()["recent_deployment"] is None
 
@@ -185,9 +186,10 @@ def test_evidence_ingestion_feeds_investigation(client: TestClient) -> None:
         "dependency_logs": 0,
         "dependency_alerts": 0,
         "dependency_deployments": 0,
+        "historical_incidents": 0,
     }
     assert investigation["correlation_window"]["lookback_minutes"] == 60
-    assert investigation["scoring_method"] == "deterministic_v1"
+    assert investigation["scoring_method"] == "deterministic_v2"
     assert investigation["ranked_signals"]
     assert investigation["root_cause_candidates"]
     assert client.get(
@@ -338,6 +340,135 @@ def test_service_dependencies_feed_cross_service_investigation(client: TestClien
         },
     ).status_code == 409
     assert client.get("/services/missing-service/dependencies").status_code == 404
+
+
+def test_confirmed_resolutions_feed_historical_incident_similarity(
+    client: TestClient,
+) -> None:
+    client.post(
+        "/incidents",
+        json={
+            "service_name": "payments-service",
+            "title": "Payment provider timeout",
+            "summary": "Checkout payments timed out when the provider pool was exhausted",
+            "incident_id": "INC-HIST-1",
+            "severity": "high",
+            "started_at": "2026-08-01T12:00:00Z",
+        },
+    )
+    client.post(
+        "/logs",
+        json={
+            "service_name": "payments-service",
+            "incident_id": "INC-HIST-1",
+            "message": "Provider connection pool timeout",
+            "level": "ERROR",
+            "timestamp": "2026-08-01T12:02:00Z",
+        },
+    )
+    resolution_response = client.post(
+        "/incidents/INC-HIST-1/resolution",
+        json={
+            "root_cause": "The provider connection pool was undersized",
+            "resolution_summary": "Increased the pool size and restarted workers",
+            "resolution_confirmed_by": "primary-on-call",
+            "resolved_at": "2026-08-01T13:00:00Z",
+        },
+    )
+    assert resolution_response.status_code == 201
+    assert resolution_response.json()["status"] == "resolved"
+    resolved_incident = client.get("/incidents/INC-HIST-1").json()
+    assert resolved_incident["resolution_summary"] == (
+        "Increased the pool size and restarted workers"
+    )
+    assert resolved_incident["resolved_at"].startswith("2026-08-01T13:00:00")
+
+    client.post(
+        "/incidents",
+        json={
+            "service_name": "payments-service",
+            "title": "Checkout payment timeout",
+            "summary": "Provider pool connections are exhausted during checkout",
+            "incident_id": "INC-CURRENT-1",
+            "severity": "high",
+            "started_at": "2026-09-08T12:00:00Z",
+        },
+    )
+    client.post(
+        "/logs",
+        json={
+            "service_name": "payments-service",
+            "incident_id": "INC-CURRENT-1",
+            "message": "Provider connection pool timeout",
+            "level": "ERROR",
+            "timestamp": "2026-09-08T12:01:00Z",
+        },
+    )
+
+    investigation = client.get(
+        "/incidents/INC-CURRENT-1/investigation",
+        params={"historical_similarity_threshold": 0.1},
+    ).json()
+
+    assert investigation["evidence"]["historical_incidents"] == 1
+    historical = investigation["historical_incidents"][0]
+    assert historical["incident_id"] == "INC-HIST-1"
+    assert historical["root_cause"] == "The provider connection pool was undersized"
+    assert historical["resolution_confirmed_by"] == "primary-on-call"
+    assert {"payment", "provider", "pool", "timeout"}.issubset(
+        historical["matching_terms"]
+    )
+    historical_signal = next(
+        signal
+        for signal in investigation["ranked_signals"]
+        if signal["signal_id"] == "incident:INC-HIST-1"
+    )
+    assert historical_signal["kind"] == "historical_incident"
+
+    without_history = client.get(
+        "/incidents/INC-CURRENT-1/investigation",
+        params={"historical_incident_limit": 0},
+    ).json()
+    assert without_history["historical_incidents"] == []
+
+    duplicate_resolution = client.post(
+        "/incidents/INC-HIST-1/resolution",
+        json={
+            "root_cause": "Replacement",
+            "resolution_summary": "Replacement",
+            "resolution_confirmed_by": "operator",
+        },
+    )
+    assert duplicate_resolution.status_code == 409
+    assert client.post(
+        "/incidents/INC-missing/resolution",
+        json={
+            "root_cause": "Unknown",
+            "resolution_summary": "Unknown",
+            "resolution_confirmed_by": "operator",
+        },
+    ).status_code == 404
+
+    client.post(
+        "/incidents",
+        json={
+            "service_name": "future-service",
+            "title": "Future incident",
+            "summary": "Timestamp validation",
+            "incident_id": "INC-FUTURE-1",
+            "started_at": "2026-09-08T12:00:00Z",
+        },
+    )
+    invalid_timestamp = client.post(
+        "/incidents/INC-FUTURE-1/resolution",
+        json={
+            "root_cause": "Clock mismatch",
+            "resolution_summary": "Corrected the clock",
+            "resolution_confirmed_by": "operator",
+            "resolved_at": "2026-09-08T11:59:00Z",
+        },
+    )
+    assert invalid_timestamp.status_code == 409
 
 
 def test_duplicate_identifiers_return_conflict(client: TestClient) -> None:

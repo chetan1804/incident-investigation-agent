@@ -18,6 +18,7 @@ Build an agentic AI system that helps engineers investigate production incidents
 - Aggregate feedback coverage and accuracy metrics by prompt version or model.
 - Run and persist automated prompt regressions against a versioned dataset.
 - Correlate time-windowed evidence from upstream and downstream service dependencies.
+- Reuse confirmed resolutions from deterministically matched historical incidents.
 - Manage schema changes with Alembic migrations.
 
 ## Structure
@@ -76,7 +77,7 @@ Override the window per investigation request:
 GET /incidents/INC-4001/investigation?lookback_minutes=120&lookahead_minutes=45
 ```
 
-The defaults can be changed with `CORRELATION_LOOKBACK_MINUTES` and `CORRELATION_LOOKAHEAD_MINUTES`. Confidence values currently use the transparent `deterministic_v1` severity-and-proximity heuristic; they are ranking scores, not statistically calibrated probabilities.
+The defaults can be changed with `CORRELATION_LOOKBACK_MINUTES` and `CORRELATION_LOOKAHEAD_MINUTES`. Confidence values currently use the transparent `deterministic_v2` heuristic based on severity, proximity, dependency context, and historical similarity; they are ranking scores, not statistically calibrated probabilities.
 
 ## Service dependencies
 
@@ -98,6 +99,28 @@ time-windowed logs, alerts, and deployments from directly connected services.
 Upstream failures and changes can become root-cause candidates, while downstream
 failures are ranked as impact signals and are not presented as causes. Dependency
 criticality influences signal ranking.
+
+## Historical incidents
+
+Confirm the root cause and resolution after an incident is resolved:
+
+```text
+POST /incidents/INC-3001/resolution
+
+{
+  "root_cause": "The payment provider connection pool was undersized.",
+  "resolution_summary": "Increased the pool size and restarted workers.",
+  "resolution_confirmed_by": "primary-on-call",
+  "resolved_at": "2026-09-08T13:00:00Z"
+}
+```
+
+Future investigations compare their title, summary, alerts, and error logs with
+earlier confirmed incidents. Matches include the shared terms, similarity score,
+root cause, and confirmed resolution. They are also supplied to AI analysis as
+grounded `historical_incident` signals. Tune or disable matching per request with
+`historical_similarity_threshold` and `historical_incident_limit`; their defaults
+come from `HISTORICAL_SIMILARITY_THRESHOLD` and `HISTORICAL_INCIDENT_LIMIT`.
 
 ## AI-assisted analysis
 
@@ -188,5 +211,5 @@ The existing `GET /incidents/{incident_id}/investigation` remains deterministic 
 
 ## Next step
 
-Correlate similar historical incidents and confirmed resolutions so investigators
-can reuse evidence from earlier failures.
+Add trace-aware correlation so logs spanning multiple services can be grouped into
+a single request path during an investigation.

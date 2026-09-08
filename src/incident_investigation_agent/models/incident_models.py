@@ -94,6 +94,12 @@ class Incident(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    root_cause: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolution_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolution_confirmed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
 
     service: Mapped[Service] = relationship(back_populates="incidents")
