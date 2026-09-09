@@ -21,6 +21,8 @@ from incident_investigation_agent.api.schemas import (
     IncidentResponse,
     InvestigationResponse,
     LogCreateRequest,
+    MetricAnomalyCreateRequest,
+    MetricAnomalyResponse,
     ServiceDependencyCreateRequest,
     ServiceDependencyResponse,
 )
@@ -32,7 +34,11 @@ from incident_investigation_agent.exceptions import (
     ResourceConflictError,
     ResourceNotFoundError,
 )
-from incident_investigation_agent.models.incident_models import AIAnalysisRecord, AIRegressionRun
+from incident_investigation_agent.models.incident_models import (
+    AIAnalysisRecord,
+    AIRegressionRun,
+    MetricAnomaly,
+)
 from incident_investigation_agent.services.ai_analysis_service import (
     PROMPT_VERSION,
     HypothesisGenerator,
@@ -182,6 +188,38 @@ def create_alert(
     return {"id": alert.id, "name": alert.name, "severity": alert.severity, "incident_id": payload.incident_id}
 
 
+def _serialize_metric_anomaly(
+    anomaly: MetricAnomaly, incident_id: str | None = None
+) -> dict:
+    return {
+        "anomaly_id": anomaly.anomaly_id,
+        "service_name": anomaly.service.name,
+        "metric_name": anomaly.metric_name,
+        "observed_value": anomaly.observed_value,
+        "baseline_value": anomaly.baseline_value,
+        "unit": anomaly.unit,
+        "severity": anomaly.severity,
+        "incident_id": incident_id
+        or (anomaly.incident.incident_id if anomaly.incident else None),
+        "description": anomaly.description,
+        "metadata_json": anomaly.metadata_json,
+        "observed_at": anomaly.observed_at,
+    }
+
+
+@app.post(
+    "/metric-anomalies",
+    response_model=MetricAnomalyResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_metric_anomaly(
+    payload: MetricAnomalyCreateRequest,
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> dict:
+    anomaly = incident_service.add_metric_anomaly(**payload.model_dump())
+    return _serialize_metric_anomaly(anomaly, payload.incident_id)
+
+
 @app.post("/deployments", status_code=status.HTTP_201_CREATED)
 def create_deployment(
     payload: DeploymentCreateRequest,
@@ -300,6 +338,22 @@ def get_incident_alerts(
             "status": alert.status,
         }
         for alert in alerts
+    ]
+
+
+@app.get(
+    "/incidents/{incident_id}/metric-anomalies",
+    response_model=list[MetricAnomalyResponse],
+)
+def get_incident_metric_anomalies(
+    incident_id: str,
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> list[dict]:
+    if incident_service.get_incident(incident_id) is None:
+        raise ResourceNotFoundError(f"Incident '{incident_id}' was not found")
+    return [
+        _serialize_metric_anomaly(anomaly, incident_id)
+        for anomaly in incident_service.get_metric_anomalies(incident_id)
     ]
 
 

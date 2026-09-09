@@ -10,6 +10,7 @@ from incident_investigation_agent.models.incident_models import (
     IncidentSeverity,
     IncidentStatus,
     LogEntry,
+    MetricAnomaly,
     Service,
     ServiceDependency,
 )
@@ -24,6 +25,7 @@ __all__ = [
     "IncidentSeverity",
     "IncidentStatus",
     "LogEntry",
+    "MetricAnomaly",
     "Service",
     "ServiceDependency",
 ]

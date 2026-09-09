@@ -43,10 +43,22 @@ def test_incident_repository_can_create_and_lookup_incident(db_session: Session)
         metadata_json={"commit": "a21d91"},
     )
 
+    repo.create_metric_anomaly(
+        service_name="payment-service",
+        metric_name="payment_latency_p95",
+        observed_value=2400,
+        baseline_value=300,
+        unit="ms",
+        severity="critical",
+        incident_id="INC-1001",
+        metadata_json={"region": "us-east-1"},
+    )
+
     fetched = repo.get_incident_by_id("INC-1001")
     logs = repo.get_logs_for_incident("INC-1001")
     alerts = repo.get_related_alerts("INC-1001")
     deployments = repo.get_deployments_for_service("payment-service")
+    metric_anomalies = repo.get_metric_anomalies_for_incident("INC-1001")
 
     assert fetched is not None
     assert fetched.title == "Checkout failures"
@@ -56,6 +68,8 @@ def test_incident_repository_can_create_and_lookup_incident(db_session: Session)
     assert alerts[0].name == "checkout_error_rate_spike"
     assert len(deployments) == 1
     assert deployments[0].deployment_id == "DEPLOY-120"
+    assert len(metric_anomalies) == 1
+    assert metric_anomalies[0].metric_name == "payment_latency_p95"
 
 
 def test_repository_persists_ai_analysis_and_feedback(db_session: Session) -> None:

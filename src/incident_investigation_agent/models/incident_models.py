@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
-from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, Enum as SAEnum, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from incident_investigation_agent.database.base import Base
@@ -44,6 +44,7 @@ class Service(Base):
     deployments: Mapped[list["Deployment"]] = relationship(back_populates="service")
     logs: Mapped[list["LogEntry"]] = relationship(back_populates="service")
     alerts: Mapped[list["Alert"]] = relationship(back_populates="service")
+    metric_anomalies: Mapped[list["MetricAnomaly"]] = relationship(back_populates="service")
 
 
 class ServiceDependency(Base):
@@ -105,6 +106,7 @@ class Incident(Base):
     service: Mapped[Service] = relationship(back_populates="incidents")
     logs: Mapped[list["LogEntry"]] = relationship(back_populates="incident")
     alerts: Mapped[list["Alert"]] = relationship(back_populates="incident")
+    metric_anomalies: Mapped[list["MetricAnomaly"]] = relationship(back_populates="incident")
     ai_analyses: Mapped[list["AIAnalysisRecord"]] = relationship(back_populates="incident")
 
 
@@ -160,6 +162,32 @@ class Alert(Base):
 
     service: Mapped[Service] = relationship(back_populates="alerts")
     incident: Mapped[Incident | None] = relationship(back_populates="alerts")
+
+
+class MetricAnomaly(Base):
+    """A time-series metric observation that deviates from its baseline."""
+
+    __tablename__ = "metric_anomalies"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    anomaly_id: Mapped[str] = mapped_column(
+        String(64), unique=True, index=True, nullable=False
+    )
+    service_id: Mapped[int] = mapped_column(ForeignKey("services.id"), nullable=False, index=True)
+    incident_id: Mapped[int | None] = mapped_column(ForeignKey("incidents.id"), nullable=True, index=True)
+    metric_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    observed_value: Mapped[float] = mapped_column(Float, nullable=False)
+    baseline_value: Mapped[float] = mapped_column(Float, nullable=False)
+    unit: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    severity: Mapped[str] = mapped_column(String(32), default="warning", nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True
+    )
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+    service: Mapped[Service] = relationship(back_populates="metric_anomalies")
+    incident: Mapped[Incident | None] = relationship(back_populates="metric_anomalies")
 
 
 class AIAnalysisRecord(Base):

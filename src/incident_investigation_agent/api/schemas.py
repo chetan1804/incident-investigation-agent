@@ -55,9 +55,11 @@ class EvidenceCounts(BaseModel):
     logs: int
     alerts: int
     deployments: int
+    metric_anomalies: int
     dependency_logs: int
     dependency_alerts: int
     dependency_deployments: int
+    dependency_metric_anomalies: int
     historical_incidents: int
     trace_paths: int
     trace_logs: int
@@ -299,6 +301,33 @@ class AlertCreateRequest(BaseModel):
     description: str | None = None
     incident_id: str | None = Field(default=None, max_length=64)
     fired_at: datetime | None = None
+
+
+class MetricAnomalyCreateRequest(BaseModel):
+    service_name: str = Field(min_length=1, max_length=255)
+    metric_name: str = Field(min_length=1, max_length=255)
+    observed_value: float = Field(allow_inf_nan=False)
+    baseline_value: float = Field(allow_inf_nan=False)
+    unit: str | None = Field(default=None, max_length=64)
+    severity: Literal["low", "medium", "warning", "high", "critical"] = "warning"
+    incident_id: str | None = Field(default=None, max_length=64)
+    description: str | None = Field(default=None, max_length=4000)
+    metadata_json: dict[str, Any] | None = None
+    observed_at: datetime | None = None
+
+
+class MetricAnomalyResponse(BaseModel):
+    anomaly_id: str
+    service_name: str
+    metric_name: str
+    observed_value: float
+    baseline_value: float
+    unit: str | None
+    severity: str
+    incident_id: str | None
+    description: str | None
+    metadata_json: dict[str, Any] | None
+    observed_at: datetime
 
 
 class DeploymentCreateRequest(BaseModel):

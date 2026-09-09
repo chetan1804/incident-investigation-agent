@@ -21,6 +21,7 @@ from incident_investigation_agent.models.incident_models import (
     Incident,
     IncidentStatus,
     LogEntry,
+    MetricAnomaly,
     Service,
     ServiceDependency,
 )
@@ -254,6 +255,25 @@ class IncidentRepository:
         )
         return list(self.session.scalars(statement).all())
 
+    def get_metric_anomalies_for_service(
+        self,
+        service_name: str,
+        *,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> list[MetricAnomaly]:
+        statement = (
+            select(MetricAnomaly)
+            .join(Service)
+            .where(
+                Service.name == service_name,
+                MetricAnomaly.observed_at >= window_start,
+                MetricAnomaly.observed_at <= window_end,
+            )
+            .order_by(MetricAnomaly.observed_at.asc())
+        )
+        return list(self.session.scalars(statement).all())
+
     def get_logs_for_incident(
         self,
         incident_id: str,
@@ -290,6 +310,25 @@ class IncidentRepository:
         if window_end is not None:
             statement = statement.where(Alert.fired_at <= window_end)
         statement = statement.order_by(Alert.fired_at.desc())
+        return list(self.session.scalars(statement).all())
+
+    def get_metric_anomalies_for_incident(
+        self,
+        incident_id: str,
+        *,
+        window_start: datetime | None = None,
+        window_end: datetime | None = None,
+    ) -> list[MetricAnomaly]:
+        incident = self.get_incident_by_id(incident_id)
+        if incident is None:
+            return []
+
+        statement = select(MetricAnomaly).where(MetricAnomaly.incident_id == incident.id)
+        if window_start is not None:
+            statement = statement.where(MetricAnomaly.observed_at >= window_start)
+        if window_end is not None:
+            statement = statement.where(MetricAnomaly.observed_at <= window_end)
+        statement = statement.order_by(MetricAnomaly.observed_at.asc())
         return list(self.session.scalars(statement).all())
 
     def get_deployments_for_service(
@@ -362,6 +401,39 @@ class IncidentRepository:
         self.session.commit()
         self.session.refresh(alert)
         return alert
+
+    def create_metric_anomaly(
+        self,
+        *,
+        service_name: str,
+        metric_name: str,
+        observed_value: float,
+        baseline_value: float,
+        unit: str | None = None,
+        severity: str = "warning",
+        incident_id: str | None = None,
+        description: str | None = None,
+        metadata_json: dict | None = None,
+        observed_at: datetime | None = None,
+    ) -> MetricAnomaly:
+        service, incident = self._resolve_evidence_context(service_name, incident_id)
+        anomaly = MetricAnomaly(
+            anomaly_id=f"MA-{uuid4()}",
+            service_id=service.id,
+            incident_id=incident.id if incident else None,
+            metric_name=metric_name,
+            observed_value=observed_value,
+            baseline_value=baseline_value,
+            unit=unit,
+            severity=severity,
+            description=description,
+            metadata_json=metadata_json,
+            **({"observed_at": observed_at} if observed_at is not None else {}),
+        )
+        self.session.add(anomaly)
+        self.session.commit()
+        self.session.refresh(anomaly)
+        return anomaly
 
     def create_deployment(
         self,

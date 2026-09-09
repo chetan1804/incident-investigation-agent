@@ -12,6 +12,7 @@ from incident_investigation_agent.models.incident_models import (
     Deployment,
     Incident,
     LogEntry,
+    MetricAnomaly,
     ServiceDependency,
 )
 from incident_investigation_agent.repositories.incident_repository import IncidentRepository
@@ -74,6 +75,9 @@ class IncidentService:
 
     def get_alerts(self, incident_id: str) -> list[Alert]:
         return self.repository.get_related_alerts(incident_id)
+
+    def get_metric_anomalies(self, incident_id: str) -> list[MetricAnomaly]:
+        return self.repository.get_metric_anomalies_for_incident(incident_id)
 
     def get_deployments(self, service_name: str) -> list[Deployment]:
         return self.repository.get_deployments_for_service(service_name)
@@ -225,6 +229,9 @@ class IncidentService:
         alerts = self.repository.get_related_alerts(
             incident_id, window_start=window_start, window_end=window_end
         )
+        metric_anomalies = self.repository.get_metric_anomalies_for_incident(
+            incident_id, window_start=window_start, window_end=window_end
+        )
         deployments = self.repository.get_deployments_for_service(
             incident.service.name,
             window_start=window_start,
@@ -244,6 +251,7 @@ class IncidentService:
         dependency_logs: list[dict[str, Any]] = []
         dependency_alerts: list[dict[str, Any]] = []
         dependency_deployments: list[dict[str, Any]] = []
+        dependency_metric_anomalies: list[dict[str, Any]] = []
         correlated_service_ids: set[int] = set()
         for direction, dependencies in (
             ("upstream", upstream_dependencies),
@@ -292,6 +300,19 @@ class IncidentService:
                         window_end=started_at,
                     )
                 )
+                dependency_metric_anomalies.extend(
+                    {
+                        "evidence": anomaly,
+                        "service_name": service.name,
+                        "direction": direction,
+                        "criticality": criticality,
+                    }
+                    for anomaly in self.repository.get_metric_anomalies_for_service(
+                        service.name,
+                        window_start=window_start,
+                        window_end=window_end,
+                    )
+                )
 
         signals = [f"alert:{alert.name} ({alert.severity})" for alert in alerts]
         signals.extend(
@@ -314,6 +335,16 @@ class IncidentService:
             f"{item['evidence'].deployment_id}"
             for item in dependency_deployments
         )
+        signals.extend(
+            f"metric-anomaly:{anomaly.metric_name} "
+            f"({anomaly.observed_value:g} vs {anomaly.baseline_value:g})"
+            for anomaly in metric_anomalies
+        )
+        signals.extend(
+            f"{item['direction']}-metric-anomaly:{item['service_name']}:"
+            f"{item['evidence'].metric_name}"
+            for item in dependency_metric_anomalies
+        )
 
         ranked_signals = self._rank_signals(
             logs=logs,
@@ -322,6 +353,8 @@ class IncidentService:
             dependency_logs=dependency_logs,
             dependency_alerts=dependency_alerts,
             dependency_deployments=dependency_deployments,
+            metric_anomalies=metric_anomalies,
+            dependency_metric_anomalies=dependency_metric_anomalies,
             started_at=started_at,
             lookback_minutes=lookback_minutes,
             lookahead_minutes=lookahead_minutes,
@@ -394,7 +427,7 @@ class IncidentService:
             "summary": incident.summary,
             "severity": incident.severity.value,
             "status": incident.status.value,
-            "scoring_method": "deterministic_v3",
+            "scoring_method": "deterministic_v4",
             "correlation_window": {
                 "started_at": started_at.isoformat(),
                 "window_start": window_start.isoformat(),
@@ -406,9 +439,11 @@ class IncidentService:
                 "logs": len(logs),
                 "alerts": len(alerts),
                 "deployments": len(deployments),
+                "metric_anomalies": len(metric_anomalies),
                 "dependency_logs": len(dependency_logs),
                 "dependency_alerts": len(dependency_alerts),
                 "dependency_deployments": len(dependency_deployments),
+                "dependency_metric_anomalies": len(dependency_metric_anomalies),
                 "historical_incidents": len(historical_incidents),
                 "trace_paths": len(trace_paths),
                 "trace_logs": sum(path["log_count"] for path in trace_paths),
@@ -611,6 +646,8 @@ class IncidentService:
         dependency_logs: list[dict[str, Any]],
         dependency_alerts: list[dict[str, Any]],
         dependency_deployments: list[dict[str, Any]],
+        metric_anomalies: list[MetricAnomaly],
+        dependency_metric_anomalies: list[dict[str, Any]],
         started_at: datetime,
         lookback_minutes: int,
         lookahead_minutes: int,
@@ -665,6 +702,26 @@ class IncidentService:
                     "observed_at": self._as_utc(deployment.deployed_at).isoformat(),
                     "confidence": round(0.6 + 0.35 * proximity, 2),
                     "reasoning": f"Deployment completed {timing} incident start.",
+                }
+            )
+
+        for anomaly in metric_anomalies:
+            proximity, timing = self._proximity(
+                anomaly.observed_at, started_at, lookback_minutes, lookahead_minutes
+            )
+            confidence = self._metric_anomaly_confidence(anomaly, proximity)
+            ranked.append(
+                {
+                    "signal_id": f"metric-anomaly:{anomaly.anomaly_id}",
+                    "kind": "metric_anomaly",
+                    "description": self._describe_metric_anomaly(anomaly),
+                    "observed_at": self._as_utc(anomaly.observed_at).isoformat(),
+                    "confidence": confidence,
+                    "reasoning": (
+                        f"{anomaly.severity.title()} metric anomaly observed {timing} "
+                        f"incident start; deviation from baseline is "
+                        f"{self._metric_deviation_percent(anomaly):.1f}%."
+                    ),
                 }
             )
 
@@ -744,6 +801,31 @@ class IncidentService:
                     ),
                 }
             )
+
+        for item in dependency_metric_anomalies:
+            anomaly = item["evidence"]
+            proximity, timing = self._proximity(
+                anomaly.observed_at, started_at, lookback_minutes, lookahead_minutes
+            )
+            confidence = self._metric_anomaly_confidence(anomaly, proximity) * direction_weights[
+                item["direction"]
+            ] * criticality_weights.get(item["criticality"], 0.85)
+            ranked.append(
+                {
+                    "signal_id": f"metric-anomaly:{anomaly.anomaly_id}",
+                    "kind": f"{item['direction']}_metric_anomaly",
+                    "description": (
+                        f"{item['service_name']}: {self._describe_metric_anomaly(anomaly)}"
+                    ),
+                    "observed_at": self._as_utc(anomaly.observed_at).isoformat(),
+                    "confidence": round(confidence, 2),
+                    "reasoning": (
+                        f"{item['criticality'].title()}-criticality {item['direction']} "
+                        f"service metric anomaly observed {timing} incident start; "
+                        f"deviation from baseline is {self._metric_deviation_percent(anomaly):.1f}%."
+                    ),
+                }
+            )
         return sorted(ranked, key=lambda signal: (-signal["confidence"], signal["observed_at"]))
 
     @staticmethod
@@ -755,6 +837,8 @@ class IncidentService:
             "upstream_alert": "A failing upstream dependency may be contributing to the incident",
             "upstream_log": "A failure in an upstream dependency may be contributing to the incident",
             "upstream_deployment": "A recent upstream deployment may be contributing to the incident",
+            "metric_anomaly": "An abnormal metric condition may be contributing to the incident",
+            "upstream_metric_anomaly": "An upstream metric anomaly may be contributing to the incident",
             "trace_path": "A traced cross-service request path may identify the failing component",
         }
         candidates: list[dict[str, Any]] = []
@@ -774,6 +858,38 @@ class IncidentService:
                 }
             )
         return candidates
+
+    @staticmethod
+    def _metric_deviation_percent(anomaly: MetricAnomaly) -> float:
+        if anomaly.baseline_value == 0:
+            return 0.0 if anomaly.observed_value == 0 else 100.0
+        return abs(anomaly.observed_value - anomaly.baseline_value) / abs(
+            anomaly.baseline_value
+        ) * 100
+
+    @classmethod
+    def _metric_anomaly_confidence(
+        cls, anomaly: MetricAnomaly, proximity: float
+    ) -> float:
+        severity_weights = {
+            "critical": 1.0,
+            "high": 0.9,
+            "warning": 0.7,
+            "medium": 0.65,
+            "low": 0.4,
+        }
+        severity = severity_weights.get(anomaly.severity.lower(), 0.55)
+        deviation = min(cls._metric_deviation_percent(anomaly) / 100, 1.0)
+        return round(0.45 * severity + 0.3 * deviation + 0.25 * proximity, 2)
+
+    @staticmethod
+    def _describe_metric_anomaly(anomaly: MetricAnomaly) -> str:
+        unit = f" {anomaly.unit}" if anomaly.unit else ""
+        direction = "above" if anomaly.observed_value >= anomaly.baseline_value else "below"
+        return (
+            f"{anomaly.metric_name} {anomaly.observed_value:g}{unit} "
+            f"({direction} baseline {anomaly.baseline_value:g}{unit})"
+        )
 
     @classmethod
     def _proximity(
@@ -838,6 +954,33 @@ class IncidentService:
             description=description,
             incident_id=incident_id,
             fired_at=fired_at,
+        )
+
+    def add_metric_anomaly(
+        self,
+        *,
+        service_name: str,
+        metric_name: str,
+        observed_value: float,
+        baseline_value: float,
+        unit: str | None = None,
+        severity: str = "warning",
+        incident_id: str | None = None,
+        description: str | None = None,
+        metadata_json: dict[str, Any] | None = None,
+        observed_at: datetime | None = None,
+    ) -> MetricAnomaly:
+        return self.repository.create_metric_anomaly(
+            service_name=service_name,
+            metric_name=metric_name,
+            observed_value=observed_value,
+            baseline_value=baseline_value,
+            unit=unit,
+            severity=severity,
+            incident_id=incident_id,
+            description=description,
+            metadata_json=metadata_json,
+            observed_at=observed_at,
         )
 
     def add_deployment(

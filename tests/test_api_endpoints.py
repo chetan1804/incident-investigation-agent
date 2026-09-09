@@ -120,9 +120,11 @@ def test_incident_api_endpoints_work(client: TestClient) -> None:
         "logs": 0,
         "alerts": 0,
         "deployments": 0,
+        "metric_anomalies": 0,
         "dependency_logs": 0,
         "dependency_alerts": 0,
         "dependency_deployments": 0,
+        "dependency_metric_anomalies": 0,
         "historical_incidents": 0,
         "trace_paths": 0,
         "trace_logs": 0,
@@ -185,15 +187,17 @@ def test_evidence_ingestion_feeds_investigation(client: TestClient) -> None:
         "logs": 1,
         "alerts": 1,
         "deployments": 1,
+        "metric_anomalies": 0,
         "dependency_logs": 0,
         "dependency_alerts": 0,
         "dependency_deployments": 0,
+        "dependency_metric_anomalies": 0,
         "historical_incidents": 0,
         "trace_paths": 0,
         "trace_logs": 0,
     }
     assert investigation["correlation_window"]["lookback_minutes"] == 60
-    assert investigation["scoring_method"] == "deterministic_v3"
+    assert investigation["scoring_method"] == "deterministic_v4"
     assert investigation["ranked_signals"]
     assert investigation["root_cause_candidates"]
     assert client.get(
@@ -222,6 +226,148 @@ def test_evidence_rejects_unknown_incident_and_service_mismatch(client: TestClie
         json={"service_name": "payments-service", "name": "error_rate", "incident_id": "INC-4002"},
     )
     assert mismatch_response.status_code == 409
+
+
+def test_metric_anomalies_feed_incident_and_dependency_correlation(client: TestClient) -> None:
+    client.post(
+        "/incidents",
+        json={
+            "service_name": "checkout-service",
+            "title": "Checkout latency",
+            "summary": "Checkout latency increased",
+            "incident_id": "INC-METRIC-1",
+            "started_at": "2026-09-09T12:00:00Z",
+        },
+    )
+    client.post(
+        "/service-dependencies",
+        json={
+            "service_name": "checkout-service",
+            "depends_on_service_name": "payments-service",
+            "criticality": "high",
+        },
+    )
+    client.post(
+        "/service-dependencies",
+        json={
+            "service_name": "storefront-service",
+            "depends_on_service_name": "checkout-service",
+            "criticality": "medium",
+        },
+    )
+
+    direct = client.post(
+        "/metric-anomalies",
+        json={
+            "service_name": "checkout-service",
+            "metric_name": "request_latency_p95",
+            "observed_value": 1800,
+            "baseline_value": 250,
+            "unit": "ms",
+            "severity": "critical",
+            "incident_id": "INC-METRIC-1",
+            "description": "Latency exceeded the normal band",
+            "metadata_json": {"region": "ap-south-1"},
+            "observed_at": "2026-09-09T12:02:00Z",
+        },
+    )
+    upstream = client.post(
+        "/metric-anomalies",
+        json={
+            "service_name": "payments-service",
+            "metric_name": "connection_pool_saturation",
+            "observed_value": 98,
+            "baseline_value": 45,
+            "unit": "%",
+            "severity": "high",
+            "observed_at": "2026-09-09T11:58:00Z",
+        },
+    )
+    downstream = client.post(
+        "/metric-anomalies",
+        json={
+            "service_name": "storefront-service",
+            "metric_name": "checkout_abandonment_rate",
+            "observed_value": 30,
+            "baseline_value": 5,
+            "unit": "%",
+            "severity": "high",
+            "observed_at": "2026-09-09T12:05:00Z",
+        },
+    )
+    client.post(
+        "/metric-anomalies",
+        json={
+            "service_name": "checkout-service",
+            "metric_name": "old_cpu_usage",
+            "observed_value": 99,
+            "baseline_value": 20,
+            "unit": "%",
+            "incident_id": "INC-METRIC-1",
+            "observed_at": "2026-09-09T09:00:00Z",
+        },
+    )
+
+    assert direct.status_code == 201
+    assert direct.json()["anomaly_id"].startswith("MA-")
+    assert direct.json()["metadata_json"] == {"region": "ap-south-1"}
+    assert upstream.status_code == 201
+    assert downstream.status_code == 201
+
+    listed = client.get("/incidents/INC-METRIC-1/metric-anomalies")
+    assert listed.status_code == 200
+    assert len(listed.json()) == 2
+
+    investigation = client.get("/incidents/INC-METRIC-1/investigation").json()
+    assert investigation["evidence"]["metric_anomalies"] == 1
+    assert investigation["evidence"]["dependency_metric_anomalies"] == 2
+    signals = {signal["signal_id"]: signal for signal in investigation["ranked_signals"]}
+    assert signals[f"metric-anomaly:{direct.json()['anomaly_id']}"]["kind"] == "metric_anomaly"
+    assert signals[f"metric-anomaly:{upstream.json()['anomaly_id']}"]["kind"] == "upstream_metric_anomaly"
+    assert signals[f"metric-anomaly:{downstream.json()['anomaly_id']}"]["kind"] == "downstream_metric_anomaly"
+    assert all("old_cpu_usage" not in signal["description"] for signal in signals.values())
+    assert any(
+        f"metric-anomaly:{upstream.json()['anomaly_id']}" in candidate["supporting_signals"]
+        for candidate in investigation["root_cause_candidates"]
+    )
+    assert all(
+        f"metric-anomaly:{downstream.json()['anomaly_id']}" not in candidate["supporting_signals"]
+        for candidate in investigation["root_cause_candidates"]
+    )
+
+    missing = client.post(
+        "/metric-anomalies",
+        json={
+            "service_name": "checkout-service",
+            "metric_name": "cpu_usage",
+            "observed_value": 90,
+            "baseline_value": 30,
+            "incident_id": "INC-MISSING",
+        },
+    )
+    mismatch = client.post(
+        "/metric-anomalies",
+        json={
+            "service_name": "payments-service",
+            "metric_name": "cpu_usage",
+            "observed_value": 90,
+            "baseline_value": 30,
+            "incident_id": "INC-METRIC-1",
+        },
+    )
+    invalid_severity = client.post(
+        "/metric-anomalies",
+        json={
+            "service_name": "checkout-service",
+            "metric_name": "cpu_usage",
+            "observed_value": 90,
+            "baseline_value": 30,
+            "severity": "urgent",
+        },
+    )
+    assert missing.status_code == 404
+    assert mismatch.status_code == 409
+    assert invalid_severity.status_code == 422
 
 
 def test_service_dependencies_feed_cross_service_investigation(client: TestClient) -> None:

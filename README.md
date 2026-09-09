@@ -20,6 +20,7 @@ Build an agentic AI system that helps engineers investigate production incidents
 - Correlate time-windowed evidence from upstream and downstream service dependencies.
 - Reuse confirmed resolutions from deterministically matched historical incidents.
 - Reconstruct cross-service request paths from shared trace IDs.
+- Ingest and correlate metric anomalies for incident and dependency services.
 - Manage schema changes with Alembic migrations.
 
 ## Structure
@@ -78,7 +79,7 @@ Override the window per investigation request:
 GET /incidents/INC-4001/investigation?lookback_minutes=120&lookahead_minutes=45
 ```
 
-The defaults can be changed with `CORRELATION_LOOKBACK_MINUTES` and `CORRELATION_LOOKAHEAD_MINUTES`. Confidence values currently use the transparent `deterministic_v3` heuristic based on severity, proximity, dependency context, historical similarity, and trace linkage; they are ranking scores, not statistically calibrated probabilities.
+The defaults can be changed with `CORRELATION_LOOKBACK_MINUTES` and `CORRELATION_LOOKAHEAD_MINUTES`. Confidence values currently use the transparent `deterministic_v4` heuristic based on severity, proximity, metric deviation, dependency context, historical similarity, and trace linkage; they are ranking scores, not statistically calibrated probabilities.
 
 ## Service dependencies
 
@@ -134,6 +135,33 @@ to AI analysis through grounded IDs such as `trace:trace-checkout-1`.
 
 Use `trace_path_limit=0` on an investigation request to disable trace expansion,
 or set the default with `TRACE_PATH_LIMIT`.
+
+## Metric anomalies
+
+Ingest an observed metric value together with its normal baseline:
+
+```text
+POST /metric-anomalies
+
+{
+  "service_name": "checkout-service",
+  "metric_name": "request_latency_p95",
+  "observed_value": 1800,
+  "baseline_value": 250,
+  "unit": "ms",
+  "severity": "critical",
+  "incident_id": "INC-4001",
+  "observed_at": "2026-09-09T12:02:00Z"
+}
+```
+
+List anomalies explicitly attached to an incident with
+`GET /incidents/{incident_id}/metric-anomalies`. Investigations include attached
+anomalies inside the correlation window as ranked signals. They also include
+time-windowed anomalies from directly connected services: upstream anomalies can
+support root-cause candidates, while downstream anomalies are treated as impact
+signals. Ranking considers severity, percentage deviation from baseline, timing,
+dependency direction, and dependency criticality.
 
 ## AI-assisted analysis
 
@@ -224,5 +252,5 @@ The existing `GET /incidents/{incident_id}/investigation` remains deterministic 
 
 ## Next step
 
-Add metric-anomaly ingestion and correlation so investigations can combine
-time-series symptoms with logs, alerts, deployments, and traces.
+Add production-source ingestion adapters so monitoring, logging, and deployment
+systems can submit normalized evidence without custom API clients.
