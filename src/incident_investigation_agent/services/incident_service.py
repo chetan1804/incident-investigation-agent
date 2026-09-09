@@ -943,17 +943,23 @@ class IncidentService:
         service_name: str,
         name: str,
         severity: str = "warning",
+        status: str = "active",
         description: str | None = None,
         incident_id: str | None = None,
         fired_at: datetime | None = None,
+        source: str = "api",
+        source_event_id: str | None = None,
     ) -> Alert:
         return self.repository.create_alert(
             service_name=service_name,
             name=name,
             severity=severity,
+            status=status,
             description=description,
             incident_id=incident_id,
             fired_at=fired_at,
+            source=source,
+            source_event_id=source_event_id,
         )
 
     def add_metric_anomaly(

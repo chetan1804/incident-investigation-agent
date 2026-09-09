@@ -370,6 +370,116 @@ def test_metric_anomalies_feed_incident_and_dependency_correlation(client: TestC
     assert invalid_severity.status_code == 422
 
 
+def test_alertmanager_webhook_normalizes_batches_and_retries_idempotently(
+    client: TestClient,
+) -> None:
+    client.post(
+        "/incidents",
+        json={
+            "service_name": "payments-service",
+            "title": "Payment availability",
+            "summary": "Payment requests are failing",
+            "incident_id": "INC-AM-1",
+            "started_at": "2026-09-09T12:00:00Z",
+        },
+    )
+    payload = {
+        "version": "4",
+        "receiver": "incident-agent",
+        "commonLabels": {
+            "service": "payments-service",
+            "incident_id": "INC-AM-1",
+            "severity": "high",
+        },
+        "commonAnnotations": {"summary": "Payments are degraded"},
+        "alerts": [
+            {
+                "status": "firing",
+                "labels": {"alertname": "PaymentErrorRate", "severity": "critical"},
+                "annotations": {"description": "Error rate exceeded 20%"},
+                "startsAt": "2026-09-09T11:58:00Z",
+                "fingerprint": "alert-fingerprint-1",
+            },
+            {
+                "status": "firing",
+                "labels": {"alertname": "PaymentLatency"},
+                "annotations": {},
+                "startsAt": "2026-09-09T11:59:00Z",
+            },
+        ],
+    }
+
+    response = client.post("/ingestion/prometheus/alertmanager", json=payload)
+    assert response.status_code == 202
+    assert response.json()["source"] == "prometheus-alertmanager"
+    assert response.json()["received"] == 2
+    assert response.json()["alerts"][0]["status"] == "active"
+    assert response.json()["alerts"][1]["source_event_id"].startswith("generated-")
+
+    resolved_payload = {
+        **payload,
+        "alerts": [
+            {
+                **payload["alerts"][0],
+                "status": "resolved",
+                "annotations": {"description": "Error rate recovered"},
+            }
+        ],
+    }
+    retry = client.post(
+        "/ingestion/prometheus/alertmanager", json=resolved_payload
+    )
+    assert retry.status_code == 202
+    assert retry.json()["alerts"][0]["id"] == response.json()["alerts"][0]["id"]
+    assert retry.json()["alerts"][0]["status"] == "resolved"
+
+    alerts = client.get("/incidents/INC-AM-1/alerts").json()
+    assert len(alerts) == 2
+    updated = next(alert for alert in alerts if alert["source_event_id"] == "alert-fingerprint-1")
+    assert updated["source"] == "prometheus-alertmanager"
+    assert updated["status"] == "resolved"
+    assert updated["description"] == "Error rate recovered"
+    assert client.get("/incidents/INC-AM-1/investigation").json()["evidence"]["alerts"] == 2
+
+
+def test_alertmanager_webhook_validates_normalization_context_before_ingestion(
+    client: TestClient,
+) -> None:
+    missing_service = client.post(
+        "/ingestion/prometheus/alertmanager",
+        json={
+            "alerts": [
+                {
+                    "labels": {"alertname": "NoService"},
+                    "startsAt": "2026-09-09T12:00:00Z",
+                }
+            ]
+        },
+    )
+    assert missing_service.status_code == 422
+
+    unknown_incident = client.post(
+        "/ingestion/prometheus/alertmanager",
+        json={
+            "commonLabels": {"service": "payments-service"},
+            "alerts": [
+                {
+                    "labels": {"alertname": "FirstAlert"},
+                    "startsAt": "2026-09-09T12:00:00Z",
+                },
+                {
+                    "labels": {
+                        "alertname": "SecondAlert",
+                        "incident_id": "INC-UNKNOWN",
+                    },
+                    "startsAt": "2026-09-09T12:01:00Z",
+                },
+            ],
+        },
+    )
+    assert unknown_incident.status_code == 404
+
+
 def test_service_dependencies_feed_cross_service_investigation(client: TestClient) -> None:
     client.post(
         "/incidents",

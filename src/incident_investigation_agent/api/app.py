@@ -13,6 +13,8 @@ from incident_investigation_agent.api.schemas import (
     AIRegressionQualityGateRequest,
     AIRegressionQualityGateResponse,
     AIRegressionRunResponse,
+    AlertmanagerIngestionResponse,
+    AlertmanagerWebhookRequest,
     AlertCreateRequest,
     DeploymentCreateRequest,
     IncidentCreateRequest,
@@ -31,6 +33,7 @@ from incident_investigation_agent.exceptions import (
     AIAnalysisError,
     AIAnalysisUnavailableError,
     InvalidFeedbackError,
+    InvalidIngestionPayloadError,
     ResourceConflictError,
     ResourceNotFoundError,
 )
@@ -47,6 +50,7 @@ from incident_investigation_agent.services.ai_regression_service import (
     AIRegressionComparisonService,
     AIRegressionService,
 )
+from incident_investigation_agent.services.alertmanager_adapter import AlertmanagerAdapter
 from incident_investigation_agent.services.incident_service import IncidentService
 
 app = FastAPI(title="Incident Investigation Agent", version="0.1.0")
@@ -75,6 +79,16 @@ def handle_ai_error(_request: Request, exc: AIAnalysisError) -> JSONResponse:
 @app.exception_handler(InvalidFeedbackError)
 def handle_invalid_feedback(_request: Request, exc: InvalidFeedbackError) -> JSONResponse:
     return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, content={"detail": str(exc)})
+
+
+@app.exception_handler(InvalidIngestionPayloadError)
+def handle_invalid_ingestion(
+    _request: Request, exc: InvalidIngestionPayloadError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"detail": str(exc)},
+    )
 
 
 def _serialize_ai_analysis(record: AIAnalysisRecord) -> dict:
@@ -186,6 +200,18 @@ def create_alert(
 ) -> dict:
     alert = incident_service.add_alert(**payload.model_dump())
     return {"id": alert.id, "name": alert.name, "severity": alert.severity, "incident_id": payload.incident_id}
+
+
+@app.post(
+    "/ingestion/prometheus/alertmanager",
+    response_model=AlertmanagerIngestionResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def ingest_alertmanager_webhook(
+    payload: AlertmanagerWebhookRequest,
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> dict:
+    return AlertmanagerAdapter(incident_service).ingest(payload)
 
 
 def _serialize_metric_anomaly(
@@ -336,6 +362,8 @@ def get_incident_alerts(
             "severity": alert.severity,
             "description": alert.description,
             "status": alert.status,
+            "source": alert.source,
+            "source_event_id": alert.source_event_id,
         }
         for alert in alerts
     ]

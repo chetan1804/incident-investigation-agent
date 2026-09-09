@@ -21,6 +21,7 @@ Build an agentic AI system that helps engineers investigate production incidents
 - Reuse confirmed resolutions from deterministically matched historical incidents.
 - Reconstruct cross-service request paths from shared trace IDs.
 - Ingest and correlate metric anomalies for incident and dependency services.
+- Normalize Prometheus Alertmanager webhooks into idempotent alert evidence.
 - Manage schema changes with Alembic migrations.
 
 ## Structure
@@ -163,6 +164,52 @@ support root-cause candidates, while downstream anomalies are treated as impact
 signals. Ranking considers severity, percentage deviation from baseline, timing,
 dependency direction, and dependency criticality.
 
+## Prometheus Alertmanager ingestion
+
+Point an Alertmanager webhook receiver at:
+
+```text
+POST /ingestion/prometheus/alertmanager
+```
+
+The adapter accepts the standard Alertmanager JSON webhook shape, including
+batched `alerts`, `commonLabels`, and `commonAnnotations`. It maps `alertname`,
+`severity`, `service`, and optional `incident_id` labels into normalized alert
+evidence. The service label can also be named `service_name`, `app`, or `job`.
+Descriptions come from the `description` annotation and fall back to `summary`.
+
+```json
+{
+  "version": "4",
+  "commonLabels": {
+    "service": "checkout-service",
+    "incident_id": "INC-4001"
+  },
+  "alerts": [
+    {
+      "status": "firing",
+      "labels": {
+        "alertname": "CheckoutErrorRate",
+        "severity": "critical"
+      },
+      "annotations": {
+        "description": "Checkout errors exceeded 20%"
+      },
+      "startsAt": "2026-09-09T12:02:00Z",
+      "fingerprint": "a1b2c3d4"
+    }
+  ]
+}
+```
+
+Alertmanager fingerprints are stored as source event IDs. Retried notifications
+update the existing alert, including transitions from `active` to `resolved`,
+instead of creating duplicate investigation evidence. When a fingerprint is not
+present, the adapter derives a stable ID from the labels and start time. The
+endpoint returns HTTP 202 after normalization and persistence. Deploy it behind
+an authenticated gateway or private network; webhook authentication is not yet
+built into the application.
+
 ## AI-assisted analysis
 
 Set `OPENAI_API_KEY` to enable AI analysis. `OPENAI_MODEL` defaults to `gpt-5-mini`, and `AI_MAX_RANKED_SIGNALS` limits how much correlated evidence is sent to the model. The provider request uses structured output and `store=false`; generated items are rejected if they cite signal IDs that were not in the ranked evidence.
@@ -252,5 +299,5 @@ The existing `GET /incidents/{incident_id}/investigation` remains deterministic 
 
 ## Next step
 
-Add production-source ingestion adapters so monitoring, logging, and deployment
-systems can submit normalized evidence without custom API clients.
+Add an OpenTelemetry HTTP log adapter so collectors can submit structured log
+batches with service, trace, and incident context.

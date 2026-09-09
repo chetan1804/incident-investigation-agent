@@ -383,22 +383,60 @@ class IncidentRepository:
         service_name: str,
         name: str,
         severity: str = "warning",
+        status: str = "active",
         description: str | None = None,
         incident_id: str | None = None,
         fired_at: datetime | None = None,
+        source: str = "api",
+        source_event_id: str | None = None,
     ) -> Alert:
         service, incident = self._resolve_evidence_context(service_name, incident_id)
+
+        if source_event_id is not None:
+            existing = self.session.scalar(
+                select(Alert).where(
+                    Alert.source == source,
+                    Alert.source_event_id == source_event_id,
+                )
+            )
+            if existing is not None:
+                if existing.service_id != service.id:
+                    raise ResourceConflictError(
+                        f"Alert source event '{source_event_id}' already belongs to "
+                        f"service '{existing.service.name}'"
+                    )
+                if incident is not None and existing.incident_id not in (None, incident.id):
+                    raise ResourceConflictError(
+                        f"Alert source event '{source_event_id}' is linked to another incident"
+                    )
+                existing.incident_id = incident.id if incident else existing.incident_id
+                existing.name = name
+                existing.severity = severity
+                existing.status = status
+                existing.description = description
+                if fired_at is not None:
+                    existing.fired_at = fired_at
+                self.session.commit()
+                self.session.refresh(existing)
+                return existing
 
         alert = Alert(
             service_id=service.id,
             incident_id=incident.id if incident else None,
             name=name,
             severity=severity,
+            status=status,
             description=description,
+            source=source,
+            source_event_id=source_event_id,
             **({"fired_at": fired_at} if fired_at is not None else {}),
         )
         self.session.add(alert)
-        self.session.commit()
+        self._commit_or_conflict(
+            f"Alert source event '{source_event_id}' already exists"
+            if source_event_id
+            else "Alert could not be created"
+        )
         self.session.refresh(alert)
         return alert
 

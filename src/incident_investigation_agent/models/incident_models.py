@@ -150,6 +150,9 @@ class Alert(Base):
     """Alert data associated with a service or incident."""
 
     __tablename__ = "alerts"
+    __table_args__ = (
+        UniqueConstraint("source", "source_event_id", name="uq_alerts_source_event"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     service_id: Mapped[int] = mapped_column(ForeignKey("services.id"), nullable=False, index=True)
@@ -159,6 +162,8 @@ class Alert(Base):
     fired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
     status: Mapped[str] = mapped_column(String(32), default="active")
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(String(64), default="api", nullable=False)
+    source_event_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     service: Mapped[Service] = relationship(back_populates="alerts")
     incident: Mapped[Incident | None] = relationship(back_populates="alerts")

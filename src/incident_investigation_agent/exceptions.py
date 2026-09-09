@@ -20,3 +20,7 @@ class AIAnalysisError(IncidentInvestigationError):
 
 class InvalidFeedbackError(IncidentInvestigationError):
     """Raised when feedback does not reference a hypothesis in an analysis."""
+
+
+class InvalidIngestionPayloadError(IncidentInvestigationError):
+    """Raised when an external payload lacks required normalization context."""

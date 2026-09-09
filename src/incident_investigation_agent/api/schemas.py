@@ -303,6 +303,49 @@ class AlertCreateRequest(BaseModel):
     fired_at: datetime | None = None
 
 
+class AlertmanagerAlertPayload(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    status: Literal["firing", "resolved"] = "firing"
+    labels: dict[str, str]
+    annotations: dict[str, str] = Field(default_factory=dict)
+    starts_at: datetime = Field(alias="startsAt")
+    ends_at: datetime | None = Field(default=None, alias="endsAt")
+    generator_url: str | None = Field(default=None, alias="generatorURL")
+    fingerprint: str | None = Field(default=None, min_length=1, max_length=255)
+
+
+class AlertmanagerWebhookRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    version: str | None = None
+    status: Literal["firing", "resolved"] | None = None
+    receiver: str | None = None
+    group_labels: dict[str, str] = Field(default_factory=dict, alias="groupLabels")
+    common_labels: dict[str, str] = Field(default_factory=dict, alias="commonLabels")
+    common_annotations: dict[str, str] = Field(
+        default_factory=dict, alias="commonAnnotations"
+    )
+    external_url: str | None = Field(default=None, alias="externalURL")
+    alerts: list[AlertmanagerAlertPayload] = Field(min_length=1, max_length=1000)
+
+
+class IngestedAlertResponse(BaseModel):
+    id: int
+    source_event_id: str
+    service_name: str
+    incident_id: str | None
+    name: str
+    status: str
+    fired_at: datetime
+
+
+class AlertmanagerIngestionResponse(BaseModel):
+    source: str
+    received: int
+    alerts: list[IngestedAlertResponse]
+
+
 class MetricAnomalyCreateRequest(BaseModel):
     service_name: str = Field(min_length=1, max_length=255)
     metric_name: str = Field(min_length=1, max_length=255)
