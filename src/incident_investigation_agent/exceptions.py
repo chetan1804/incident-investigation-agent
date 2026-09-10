@@ -24,3 +24,11 @@ class InvalidFeedbackError(IncidentInvestigationError):
 
 class InvalidIngestionPayloadError(IncidentInvestigationError):
     """Raised when an external payload lacks required normalization context."""
+
+
+class IngestionAuthenticationError(IncidentInvestigationError):
+    """Raised when an external ingestion request cannot be authenticated."""
+
+
+class IngestionUnavailableError(IncidentInvestigationError):
+    """Raised when an ingestion adapter is not configured for use."""

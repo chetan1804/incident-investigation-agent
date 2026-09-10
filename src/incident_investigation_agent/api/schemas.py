@@ -444,6 +444,81 @@ class DeploymentCreateRequest(BaseModel):
     deployed_at: datetime | None = None
 
 
+class GitHubRepositoryPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: int
+    name: str = Field(min_length=1, max_length=255)
+    full_name: str = Field(min_length=1, max_length=255)
+
+
+class GitHubSenderPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    login: str | None = None
+
+
+class GitHubDeploymentPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: int
+    sha: str | None = None
+    ref: str | None = None
+    task: str | None = None
+    environment: str | None = None
+    description: str | None = None
+    payload: dict[str, Any] | str | None = None
+    created_at: datetime
+    updated_at: datetime | None = None
+
+
+class GitHubDeploymentStatusPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: int
+    state: Literal[
+        "error",
+        "failure",
+        "inactive",
+        "in_progress",
+        "queued",
+        "pending",
+        "success",
+    ]
+    description: str | None = None
+    environment: str | None = None
+    log_url: str | None = None
+    environment_url: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class GitHubDeploymentWebhookPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    action: str
+    deployment: GitHubDeploymentPayload
+    deployment_status: GitHubDeploymentStatusPayload | None = None
+    repository: GitHubRepositoryPayload
+    sender: GitHubSenderPayload | None = None
+
+
+class GitHubDeploymentIngestionResult(BaseModel):
+    deployment_id: str
+    service_name: str
+    version: str
+    environment: str
+    status: str
+    source: str
+    source_event_id: str
+
+
+class GitHubWebhookResponse(BaseModel):
+    event: str
+    status: str
+    deployment: GitHubDeploymentIngestionResult | None = None
+
+
 class ServiceDependencyCreateRequest(BaseModel):
     service_name: str = Field(min_length=1, max_length=255)
     depends_on_service_name: str = Field(min_length=1, max_length=255)

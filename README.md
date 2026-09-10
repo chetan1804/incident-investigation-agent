@@ -23,6 +23,7 @@ Build an agentic AI system that helps engineers investigate production incidents
 - Ingest and correlate metric anomalies for incident and dependency services.
 - Normalize Prometheus Alertmanager webhooks into idempotent alert evidence.
 - Accept OTLP/HTTP JSON log batches with service, trace, and incident context.
+- Verify and normalize GitHub deployment lifecycle webhooks.
 - Manage schema changes with Alembic migrations.
 
 ## Structure
@@ -269,6 +270,34 @@ evidence. Successful exports return the standard empty OTLP JSON response `{}`.
 This first version accepts uncompressed JSON; binary Protobuf and gzip request
 bodies are not yet supported.
 
+## GitHub deployment ingestion
+
+Set the same high-entropy secret in the application and the GitHub repository,
+organization, or GitHub App webhook configuration:
+
+```text
+GITHUB_WEBHOOK_SECRET=replace-with-a-random-secret
+```
+
+Configure GitHub to send the `deployment` and `deployment_status` events to:
+
+```text
+POST /ingestion/github/deployments
+```
+
+The endpoint verifies `X-Hub-Signature-256` against the untouched request body
+using HMAC-SHA256 before parsing or storing an event. It rejects missing or
+incorrect signatures and returns HTTP 503 when the secret is not configured.
+GitHub's initial signed `ping` event is accepted without creating evidence.
+
+The adapter uses `deployment.payload.service_name` (or `service`) when provided,
+then falls back to the repository name. The commit SHA becomes the deployment
+version, and the GitHub environment and creation timestamp are preserved.
+Creation and subsequent status events update one deployment record identified by
+repository and GitHub deployment ID, so webhook retries and lifecycle transitions
+do not duplicate evidence. Repository, actor, delivery, ref, status URL, and
+environment URL context is retained in deployment metadata.
+
 ## AI-assisted analysis
 
 Set `OPENAI_API_KEY` to enable AI analysis. `OPENAI_MODEL` defaults to `gpt-5-mini`, and `AI_MAX_RANKED_SIGNALS` limits how much correlated evidence is sent to the model. The provider request uses structured output and `store=false`; generated items are rejected if they cite signal IDs that were not in the ranked evidence.
@@ -358,5 +387,5 @@ The existing `GET /incidents/{incident_id}/investigation` remains deterministic 
 
 ## Next step
 
-Add a signed GitHub deployment webhook adapter so deployment events can enter
-investigations directly from CI/CD workflows.
+Persist ingestion delivery audits and failure details so operators can diagnose
+and safely replay rejected production-source payloads.

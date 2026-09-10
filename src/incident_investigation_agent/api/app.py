@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from incident_investigation_agent.api.dependencies import get_hypothesis_generator, get_incident_service
 from incident_investigation_agent.api.schemas import (
@@ -22,6 +23,8 @@ from incident_investigation_agent.api.schemas import (
     IncidentResolutionResponse,
     IncidentResponse,
     InvestigationResponse,
+    GitHubDeploymentWebhookPayload,
+    GitHubWebhookResponse,
     LogCreateRequest,
     MetricAnomalyCreateRequest,
     MetricAnomalyResponse,
@@ -34,6 +37,8 @@ from incident_investigation_agent.config.settings import settings
 from incident_investigation_agent.exceptions import (
     AIAnalysisError,
     AIAnalysisUnavailableError,
+    IngestionAuthenticationError,
+    IngestionUnavailableError,
     InvalidFeedbackError,
     InvalidIngestionPayloadError,
     ResourceConflictError,
@@ -54,6 +59,9 @@ from incident_investigation_agent.services.ai_regression_service import (
 )
 from incident_investigation_agent.services.alertmanager_adapter import AlertmanagerAdapter
 from incident_investigation_agent.services.incident_service import IncidentService
+from incident_investigation_agent.services.github_deployment_adapter import (
+    GitHubDeploymentAdapter,
+)
 from incident_investigation_agent.services.otlp_log_adapter import OtlpLogAdapter
 
 app = FastAPI(title="Incident Investigation Agent", version="0.1.0")
@@ -90,6 +98,26 @@ def handle_invalid_ingestion(
 ) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"detail": str(exc)},
+    )
+
+
+@app.exception_handler(IngestionAuthenticationError)
+def handle_ingestion_authentication(
+    _request: Request, exc: IngestionAuthenticationError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content={"detail": str(exc)},
+    )
+
+
+@app.exception_handler(IngestionUnavailableError)
+def handle_ingestion_unavailable(
+    _request: Request, exc: IngestionUnavailableError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         content={"detail": str(exc)},
     )
 
@@ -270,6 +298,36 @@ def create_deployment(
         "version": deployment.version,
         "service_name": payload.service_name,
     }
+
+
+@app.post(
+    "/ingestion/github/deployments",
+    response_model=GitHubWebhookResponse,
+)
+async def ingest_github_deployment(
+    request: Request,
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> dict:
+    body = await request.body()
+    GitHubDeploymentAdapter.verify_signature(
+        body=body,
+        signature=request.headers.get("x-hub-signature-256"),
+        secret=settings.github_webhook_secret,
+    )
+    event = request.headers.get("x-github-event")
+    if event == "ping":
+        return {"event": "ping", "status": "ignored", "deployment": None}
+    if not event:
+        raise InvalidIngestionPayloadError("X-GitHub-Event header is required")
+    try:
+        payload = GitHubDeploymentWebhookPayload.model_validate_json(body)
+    except ValidationError as exc:
+        raise InvalidIngestionPayloadError("Invalid GitHub webhook payload") from exc
+    return GitHubDeploymentAdapter(incident_service).ingest(
+        event=event,
+        delivery_id=request.headers.get("x-github-delivery"),
+        payload=payload,
+    )
 
 
 @app.post(
@@ -616,6 +674,10 @@ def get_service_deployments(
             "environment": deployment.environment,
             "status": deployment.status,
             "deployed_at": deployment.deployed_at.isoformat(),
+            "notes": deployment.notes,
+            "metadata_json": deployment.metadata_json,
+            "source": deployment.source,
+            "source_event_id": deployment.source_event_id,
         }
         for deployment in deployments
     ]

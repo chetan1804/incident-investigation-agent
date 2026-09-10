@@ -1,7 +1,12 @@
+from hashlib import sha256
+import hmac
+import json
+
 from fastapi.testclient import TestClient
 
 from incident_investigation_agent.api.app import app
 from incident_investigation_agent.api.dependencies import get_hypothesis_generator
+from incident_investigation_agent.config.settings import settings
 from incident_investigation_agent.exceptions import AIAnalysisError
 from incident_investigation_agent.services.ai_analysis_service import (
     AIAnalysis,
@@ -667,6 +672,138 @@ def test_otlp_http_logs_reject_invalid_context_before_ingestion(
         },
     )
     assert unknown_incident.status_code == 404
+
+
+def test_signed_github_deployments_update_lifecycle_and_feed_investigation(
+    client: TestClient, monkeypatch
+) -> None:
+    secret = "github-test-secret"
+    monkeypatch.setattr(settings, "github_webhook_secret", secret)
+    client.post(
+        "/incidents",
+        json={
+            "service_name": "checkout-service",
+            "title": "Checkout failures",
+            "summary": "Checkout errors increased after deployment",
+            "incident_id": "INC-GH-1",
+            "started_at": "2026-09-10T12:00:00Z",
+        },
+    )
+    deployment = {
+        "id": 987654,
+        "sha": "a21d91b7a4f5a0288cba9d00d467e5d42c7041aa",
+        "ref": "main",
+        "task": "deploy",
+        "environment": "production",
+        "description": "Deploy checkout release",
+        "payload": {"service_name": "checkout-service"},
+        "created_at": "2026-09-10T11:55:00Z",
+        "updated_at": "2026-09-10T11:55:00Z",
+    }
+    base_payload = {
+        "action": "created",
+        "deployment": deployment,
+        "repository": {
+            "id": 1234,
+            "name": "commerce-platform",
+            "full_name": "example/commerce-platform",
+        },
+        "sender": {"login": "release-bot"},
+    }
+
+    def post_webhook(event: str, payload: dict, delivery_id: str):
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        signature = "sha256=" + hmac.new(
+            secret.encode("utf-8"), body, sha256
+        ).hexdigest()
+        return client.post(
+            "/ingestion/github/deployments",
+            content=body,
+            headers={
+                "content-type": "application/json",
+                "x-github-event": event,
+                "x-github-delivery": delivery_id,
+                "x-hub-signature-256": signature,
+            },
+        )
+
+    created = post_webhook("deployment", base_payload, "delivery-created")
+    assert created.status_code == 200
+    assert created.json()["status"] == "accepted"
+    assert created.json()["deployment"] == {
+        "deployment_id": "GH-987654",
+        "service_name": "checkout-service",
+        "version": "a21d91b7a4f5a0288cba9d00d467e5d42c7041aa",
+        "environment": "production",
+        "status": "created",
+        "source": "github-deployments",
+        "source_event_id": "example/commerce-platform:987654",
+    }
+
+    status_payload = {
+        **base_payload,
+        "deployment_status": {
+            "id": 7654321,
+            "state": "success",
+            "description": "Deployment completed",
+            "environment": "production",
+            "log_url": "https://github.example/deployment/log",
+            "environment_url": "https://checkout.example.com",
+            "created_at": "2026-09-10T11:57:00Z",
+        },
+    }
+    completed = post_webhook(
+        "deployment_status", status_payload, "delivery-completed"
+    )
+    assert completed.status_code == 200
+    assert completed.json()["deployment"]["status"] == "success"
+
+    deployments = client.get("/services/checkout-service/deployments").json()
+    assert len(deployments) == 1
+    assert deployments[0]["deployment_id"] == "GH-987654"
+    assert deployments[0]["status"] == "success"
+    assert deployments[0]["source"] == "github-deployments"
+    assert deployments[0]["notes"] == "Deployment completed"
+    assert deployments[0]["metadata_json"]["github"]["delivery_id"] == "delivery-completed"
+    assert deployments[0]["metadata_json"]["github"]["actor"] == "release-bot"
+
+    investigation = client.get("/incidents/INC-GH-1/investigation").json()
+    assert investigation["evidence"]["deployments"] == 1
+    assert investigation["recent_deployment"]["deployment_id"] == "GH-987654"
+
+    ping = post_webhook("ping", {"zen": "Keep it logically awesome."}, "delivery-ping")
+    assert ping.status_code == 200
+    assert ping.json() == {"event": "ping", "status": "ignored", "deployment": None}
+
+
+def test_github_deployment_webhook_fails_closed_on_authentication(
+    client: TestClient, monkeypatch
+) -> None:
+    body = b'{"action":"created"}'
+    monkeypatch.setattr(settings, "github_webhook_secret", None)
+    unavailable = client.post(
+        "/ingestion/github/deployments",
+        content=body,
+        headers={"x-github-event": "deployment"},
+    )
+    assert unavailable.status_code == 503
+
+    monkeypatch.setattr(settings, "github_webhook_secret", "configured-secret")
+    missing_signature = client.post(
+        "/ingestion/github/deployments",
+        content=body,
+        headers={"x-github-event": "deployment"},
+    )
+    invalid_signature = client.post(
+        "/ingestion/github/deployments",
+        content=body,
+        headers={
+            "x-github-event": "deployment",
+            "x-hub-signature-256": "sha256=invalid",
+        },
+    )
+    assert missing_signature.status_code == 403
+    assert invalid_signature.status_code == 403
 
 
 def test_service_dependencies_feed_cross_service_investigation(client: TestClient) -> None:

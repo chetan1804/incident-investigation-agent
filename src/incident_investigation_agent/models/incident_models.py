@@ -137,6 +137,9 @@ class Deployment(Base):
     """Represents a deployment event for a service."""
 
     __tablename__ = "deployments"
+    __table_args__ = (
+        UniqueConstraint("source", "source_event_id", name="uq_deployments_source_event"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     service_id: Mapped[int] = mapped_column(ForeignKey("services.id"), nullable=False, index=True)
@@ -147,6 +150,8 @@ class Deployment(Base):
     status: Mapped[str] = mapped_column(String(32), default="success")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    source: Mapped[str] = mapped_column(String(64), default="api", nullable=False)
+    source_event_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     service: Mapped[Service] = relationship(back_populates="deployments")
 

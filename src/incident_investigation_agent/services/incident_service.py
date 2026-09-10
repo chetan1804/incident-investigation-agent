@@ -1004,6 +1004,8 @@ class IncidentService:
         notes: str | None = None,
         metadata_json: dict[str, Any] | None = None,
         deployed_at: datetime | None = None,
+        source: str = "api",
+        source_event_id: str | None = None,
     ) -> Deployment:
         return self.repository.create_deployment(
             service_name=service_name,
@@ -1014,4 +1016,6 @@ class IncidentService:
             notes=notes,
             metadata_json=metadata_json,
             deployed_at=deployed_at,
+            source=source,
+            source_event_id=source_event_id,
         )

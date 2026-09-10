@@ -515,7 +515,34 @@ class IncidentRepository:
         notes: str | None = None,
         metadata_json: dict | None = None,
         deployed_at: datetime | None = None,
+        source: str = "api",
+        source_event_id: str | None = None,
     ) -> Deployment:
+        if source_event_id is not None:
+            existing_source_event = self.session.scalar(
+                select(Deployment).where(
+                    Deployment.source == source,
+                    Deployment.source_event_id == source_event_id,
+                )
+            )
+            if existing_source_event is not None:
+                service = self.create_service(name=service_name)
+                if existing_source_event.service_id != service.id:
+                    raise ResourceConflictError(
+                        f"Deployment source event '{source_event_id}' already belongs "
+                        f"to service '{existing_source_event.service.name}'"
+                    )
+                existing_source_event.version = version
+                existing_source_event.environment = environment
+                existing_source_event.status = status
+                existing_source_event.notes = notes
+                existing_source_event.metadata_json = metadata_json
+                if deployed_at is not None:
+                    existing_source_event.deployed_at = deployed_at
+                self.session.commit()
+                self.session.refresh(existing_source_event)
+                return existing_source_event
+
         existing = self.session.scalar(select(Deployment).where(Deployment.deployment_id == deployment_id))
         if existing is not None:
             raise ResourceConflictError(f"Deployment '{deployment_id}' already exists")
@@ -529,6 +556,8 @@ class IncidentRepository:
             status=status,
             notes=notes,
             metadata_json=metadata_json,
+            source=source,
+            source_event_id=source_event_id,
             **({"deployed_at": deployed_at} if deployed_at is not None else {}),
         )
         self.session.add(deployment)

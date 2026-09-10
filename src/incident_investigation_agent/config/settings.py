@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(default=None, repr=False)
     openai_model: str = Field(default="gpt-5-mini", min_length=1)
     ai_max_ranked_signals: int = Field(default=20, ge=1, le=100)
+    github_webhook_secret: str | None = Field(default=None, repr=False)
 
 
 settings = Settings()
