@@ -294,6 +294,66 @@ class LogCreateRequest(BaseModel):
     timestamp: datetime | None = None
 
 
+class OtlpKeyValue(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    key: str = Field(min_length=1)
+    value: dict[str, Any] = Field(default_factory=dict)
+
+
+class OtlpResource(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    attributes: list[OtlpKeyValue] = Field(default_factory=list)
+
+
+class OtlpLogRecord(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    time_unix_nano: int | str | None = Field(default=None, alias="timeUnixNano")
+    observed_time_unix_nano: int | str | None = Field(
+        default=None, alias="observedTimeUnixNano"
+    )
+    severity_number: int = Field(default=0, alias="severityNumber", ge=0, le=24)
+    severity_text: str | None = Field(default=None, alias="severityText")
+    body: dict[str, Any] | None = None
+    attributes: list[OtlpKeyValue] = Field(default_factory=list)
+    trace_id: str | None = Field(default=None, alias="traceId", max_length=32)
+    span_id: str | None = Field(default=None, alias="spanId", max_length=16)
+    flags: int | None = Field(default=None, ge=0)
+    event_name: str | None = Field(default=None, alias="eventName")
+
+
+class OtlpScopeLogs(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    scope: dict[str, Any] | None = None
+    log_records: list[OtlpLogRecord] = Field(
+        default_factory=list, alias="logRecords", max_length=10000
+    )
+
+
+class OtlpResourceLogs(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    resource: OtlpResource = Field(default_factory=OtlpResource)
+    scope_logs: list[OtlpScopeLogs] = Field(
+        default_factory=list, alias="scopeLogs", max_length=1000
+    )
+
+
+class OtlpExportLogsRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, extra="ignore")
+
+    resource_logs: list[OtlpResourceLogs] = Field(
+        default_factory=list, alias="resourceLogs", max_length=1000
+    )
+
+
+class OtlpExportLogsResponse(BaseModel):
+    pass
+
+
 class AlertCreateRequest(BaseModel):
     service_name: str = Field(min_length=1, max_length=255)
     name: str = Field(min_length=1, max_length=255)

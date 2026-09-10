@@ -25,6 +25,8 @@ from incident_investigation_agent.api.schemas import (
     LogCreateRequest,
     MetricAnomalyCreateRequest,
     MetricAnomalyResponse,
+    OtlpExportLogsRequest,
+    OtlpExportLogsResponse,
     ServiceDependencyCreateRequest,
     ServiceDependencyResponse,
 )
@@ -52,6 +54,7 @@ from incident_investigation_agent.services.ai_regression_service import (
 )
 from incident_investigation_agent.services.alertmanager_adapter import AlertmanagerAdapter
 from incident_investigation_agent.services.incident_service import IncidentService
+from incident_investigation_agent.services.otlp_log_adapter import OtlpLogAdapter
 
 app = FastAPI(title="Incident Investigation Agent", version="0.1.0")
 
@@ -191,6 +194,15 @@ def create_log(
 ) -> dict:
     log = incident_service.add_log(**payload.model_dump())
     return {"id": log.id, "message": log.message, "level": log.level, "incident_id": payload.incident_id}
+
+
+@app.post("/v1/logs", response_model=OtlpExportLogsResponse)
+def ingest_otlp_logs(
+    payload: OtlpExportLogsRequest,
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> OtlpExportLogsResponse:
+    OtlpLogAdapter(incident_service).ingest(payload)
+    return OtlpExportLogsResponse()
 
 
 @app.post("/alerts", status_code=status.HTTP_201_CREATED)
@@ -342,6 +354,9 @@ def get_incident_logs(
             "level": log.level,
             "message": log.message,
             "trace_id": log.trace_id,
+            "metadata_json": log.metadata_json,
+            "source": log.source,
+            "source_event_id": log.source_event_id,
         }
         for log in logs
     ]

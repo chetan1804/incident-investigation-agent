@@ -22,6 +22,7 @@ Build an agentic AI system that helps engineers investigate production incidents
 - Reconstruct cross-service request paths from shared trace IDs.
 - Ingest and correlate metric anomalies for incident and dependency services.
 - Normalize Prometheus Alertmanager webhooks into idempotent alert evidence.
+- Accept OTLP/HTTP JSON log batches with service, trace, and incident context.
 - Manage schema changes with Alembic migrations.
 
 ## Structure
@@ -210,6 +211,64 @@ endpoint returns HTTP 202 after normalization and persistence. Deploy it behind
 an authenticated gateway or private network; webhook authentication is not yet
 built into the application.
 
+## OpenTelemetry log ingestion
+
+Configure an OpenTelemetry Collector OTLP/HTTP JSON exporter to send logs to the
+standard endpoint:
+
+```text
+POST /v1/logs
+Content-Type: application/json
+```
+
+The endpoint accepts the OTLP `ExportLogsServiceRequest` JSON shape with
+`resourceLogs`, `scopeLogs`, and `logRecords`. A `service.name` resource
+attribute identifies the service. Add an optional `incident.id` resource or log
+attribute to attach records directly to an incident:
+
+```json
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {"stringValue": "checkout-service"}
+          },
+          {
+            "key": "incident.id",
+            "value": {"stringValue": "INC-4001"}
+          }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "logRecords": [
+            {
+              "timeUnixNano": "1789041480000000000",
+              "severityNumber": 17,
+              "severityText": "Error",
+              "body": {"stringValue": "Payment deadline exceeded"},
+              "traceId": "5b8efff798038103d269b633813fc60c",
+              "spanId": "0102040800000000"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+The adapter prefers `timeUnixNano` and falls back to `observedTimeUnixNano`, maps
+the standard numeric severity ranges to the existing log levels, decodes OTLP
+`AnyValue` bodies and attributes, and preserves resource, scope, span, and log
+metadata. Stable content hashes prevent collector retries from duplicating log
+evidence. Successful exports return the standard empty OTLP JSON response `{}`.
+This first version accepts uncompressed JSON; binary Protobuf and gzip request
+bodies are not yet supported.
+
 ## AI-assisted analysis
 
 Set `OPENAI_API_KEY` to enable AI analysis. `OPENAI_MODEL` defaults to `gpt-5-mini`, and `AI_MAX_RANKED_SIGNALS` limits how much correlated evidence is sent to the model. The provider request uses structured output and `store=false`; generated items are rejected if they cite signal IDs that were not in the ranked evidence.
@@ -299,5 +358,5 @@ The existing `GET /incidents/{incident_id}/investigation` remains deterministic 
 
 ## Next step
 
-Add an OpenTelemetry HTTP log adapter so collectors can submit structured log
-batches with service, trace, and incident context.
+Add a signed GitHub deployment webhook adapter so deployment events can enter
+investigations directly from CI/CD workflows.

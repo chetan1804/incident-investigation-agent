@@ -360,8 +360,33 @@ class IncidentRepository:
         trace_id: str | None = None,
         metadata_json: dict | None = None,
         timestamp: datetime | None = None,
+        source: str = "api",
+        source_event_id: str | None = None,
     ) -> LogEntry:
         service, incident = self._resolve_evidence_context(service_name, incident_id)
+
+        if source_event_id is not None:
+            existing = self.session.scalar(
+                select(LogEntry).where(
+                    LogEntry.source == source,
+                    LogEntry.source_event_id == source_event_id,
+                )
+            )
+            if existing is not None:
+                if existing.service_id != service.id:
+                    raise ResourceConflictError(
+                        f"Log source event '{source_event_id}' already belongs to "
+                        f"service '{existing.service.name}'"
+                    )
+                if incident is not None and existing.incident_id not in (None, incident.id):
+                    raise ResourceConflictError(
+                        f"Log source event '{source_event_id}' is linked to another incident"
+                    )
+                if incident is not None and existing.incident_id is None:
+                    existing.incident_id = incident.id
+                    self.session.commit()
+                    self.session.refresh(existing)
+                return existing
 
         log_entry = LogEntry(
             service_id=service.id,
@@ -370,10 +395,16 @@ class IncidentRepository:
             message=message,
             trace_id=trace_id,
             metadata_json=metadata_json,
+            source=source,
+            source_event_id=source_event_id,
             **({"timestamp": timestamp} if timestamp is not None else {}),
         )
         self.session.add(log_entry)
-        self.session.commit()
+        self._commit_or_conflict(
+            f"Log source event '{source_event_id}' already exists"
+            if source_event_id
+            else "Log could not be created"
+        )
         self.session.refresh(log_entry)
         return log_entry
 

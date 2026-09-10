@@ -114,6 +114,9 @@ class LogEntry(Base):
     """Structured log record associated with a service and an incident."""
 
     __tablename__ = "logs"
+    __table_args__ = (
+        UniqueConstraint("source", "source_event_id", name="uq_logs_source_event"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     service_id: Mapped[int] = mapped_column(ForeignKey("services.id"), nullable=False, index=True)
@@ -123,6 +126,8 @@ class LogEntry(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
     trace_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    source: Mapped[str] = mapped_column(String(64), default="api", nullable=False)
+    source_event_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     service: Mapped[Service] = relationship(back_populates="logs")
     incident: Mapped[Incident | None] = relationship(back_populates="logs")

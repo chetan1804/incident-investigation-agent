@@ -480,6 +480,195 @@ def test_alertmanager_webhook_validates_normalization_context_before_ingestion(
     assert unknown_incident.status_code == 404
 
 
+def test_otlp_http_logs_normalize_structure_and_retry_idempotently(
+    client: TestClient,
+) -> None:
+    client.post(
+        "/incidents",
+        json={
+            "service_name": "orders-service",
+            "title": "Order failures",
+            "summary": "Order requests are failing",
+            "incident_id": "INC-OTLP-1",
+            "started_at": "2026-09-10T12:00:00Z",
+        },
+    )
+    payload = {
+        "resourceLogs": [
+            {
+                "resource": {
+                    "attributes": [
+                        {
+                            "key": "service.name",
+                            "value": {"stringValue": "orders-service"},
+                        },
+                        {
+                            "key": "incident.id",
+                            "value": {"stringValue": "INC-OTLP-1"},
+                        },
+                        {
+                            "key": "service.version",
+                            "value": {"stringValue": "v5.2"},
+                        },
+                    ]
+                },
+                "scopeLogs": [
+                    {
+                        "scope": {"name": "orders.logger", "version": "1.0"},
+                        "logRecords": [
+                            {
+                                "timeUnixNano": "1789041480000000000",
+                                "severityNumber": 17,
+                                "severityText": "Error",
+                                "body": {"stringValue": "Database deadline exceeded"},
+                                "attributes": [
+                                    {
+                                        "key": "http.response.status_code",
+                                        "value": {"intValue": "500"},
+                                    }
+                                ],
+                                "traceId": "5b8efff798038103d269b633813fc60c",
+                                "spanId": "0102040800000000",
+                                "flags": 1,
+                            },
+                            {
+                                "observedTimeUnixNano": "1789041540000000000",
+                                "severityNumber": 9,
+                                "body": {
+                                    "kvlistValue": {
+                                        "values": [
+                                            {
+                                                "key": "message",
+                                                "value": {"stringValue": "Retry scheduled"},
+                                            },
+                                            {
+                                                "key": "attempt",
+                                                "value": {"intValue": "2"},
+                                            },
+                                        ]
+                                    }
+                                },
+                            },
+                        ],
+                    }
+                ],
+            }
+        ]
+    }
+
+    response = client.post("/v1/logs", json=payload)
+    retry = client.post("/v1/logs", json=payload)
+    assert response.status_code == 200
+    assert response.json() == {}
+    assert retry.status_code == 200
+
+    logs = client.get("/incidents/INC-OTLP-1/logs").json()
+    assert len(logs) == 2
+    assert logs[0]["message"] == "Database deadline exceeded"
+    assert logs[0]["level"] == "ERROR"
+    assert logs[0]["trace_id"] == "5b8efff798038103d269b633813fc60c"
+    assert logs[0]["timestamp"] == "2026-09-10T11:58:00"
+    assert logs[0]["source"] == "opentelemetry-otlp"
+    assert logs[0]["source_event_id"].startswith("log-")
+    assert logs[0]["metadata_json"]["otel"]["log_attributes"] == {
+        "http.response.status_code": 500
+    }
+    assert logs[0]["metadata_json"]["otel"]["scope"]["name"] == "orders.logger"
+    assert logs[1]["message"] == '{"attempt":2,"message":"Retry scheduled"}'
+    assert logs[1]["timestamp"] == "2026-09-10T11:59:00"
+
+    investigation = client.get("/incidents/INC-OTLP-1/investigation").json()
+    assert investigation["evidence"]["logs"] == 2
+    assert any(
+        signal["signal_id"] == f"log:{logs[0]['id']}"
+        for signal in investigation["ranked_signals"]
+    )
+
+
+def test_otlp_http_logs_reject_invalid_context_before_ingestion(
+    client: TestClient,
+) -> None:
+    missing_service = client.post(
+        "/v1/logs",
+        json={
+            "resourceLogs": [
+                {
+                    "scopeLogs": [
+                        {
+                            "logRecords": [
+                                {
+                                    "timeUnixNano": "1789041480000000000",
+                                    "body": {"stringValue": "No service context"},
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+    )
+    assert missing_service.status_code == 422
+
+    invalid_trace = client.post(
+        "/v1/logs",
+        json={
+            "resourceLogs": [
+                {
+                    "resource": {
+                        "attributes": [
+                            {
+                                "key": "service.name",
+                                "value": {"stringValue": "orders-service"},
+                            }
+                        ]
+                    },
+                    "scopeLogs": [
+                        {
+                            "logRecords": [
+                                {
+                                    "body": {"stringValue": "Bad trace"},
+                                    "traceId": "not-a-trace-id",
+                                }
+                            ]
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    assert invalid_trace.status_code == 422
+
+    unknown_incident = client.post(
+        "/v1/logs",
+        json={
+            "resourceLogs": [
+                {
+                    "resource": {
+                        "attributes": [
+                            {
+                                "key": "service.name",
+                                "value": {"stringValue": "orders-service"},
+                            },
+                            {
+                                "key": "incident.id",
+                                "value": {"stringValue": "INC-UNKNOWN"},
+                            },
+                        ]
+                    },
+                    "scopeLogs": [
+                        {
+                            "logRecords": [
+                                {"body": {"stringValue": "Unknown incident"}}
+                            ]
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    assert unknown_incident.status_code == 404
+
+
 def test_service_dependencies_feed_cross_service_investigation(client: TestClient) -> None:
     client.post(
         "/incidents",

@@ -926,6 +926,8 @@ class IncidentService:
         trace_id: str | None = None,
         metadata_json: dict[str, Any] | None = None,
         timestamp: datetime | None = None,
+        source: str = "api",
+        source_event_id: str | None = None,
     ) -> LogEntry:
         return self.repository.create_log(
             service_name=service_name,
@@ -935,6 +937,8 @@ class IncidentService:
             trace_id=trace_id,
             metadata_json=metadata_json,
             timestamp=timestamp,
+            source=source,
+            source_event_id=source_event_id,
         )
 
     def add_alert(
