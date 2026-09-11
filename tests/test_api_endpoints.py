@@ -485,6 +485,112 @@ def test_alertmanager_webhook_validates_normalization_context_before_ingestion(
     assert unknown_incident.status_code == 404
 
 
+def test_failed_ingestion_delivery_can_be_audited_and_safely_replayed(
+    client: TestClient,
+) -> None:
+    payload = {
+        "commonLabels": {
+            "service": "payments-service",
+            "incident_id": "INC-REPLAY-1",
+        },
+        "alerts": [
+            {
+                "labels": {"alertname": "PaymentErrors", "severity": "critical"},
+                "startsAt": "2026-09-11T12:00:00Z",
+                "fingerprint": "replay-alert-1",
+            }
+        ],
+    }
+    rejected = client.post("/ingestion/prometheus/alertmanager", json=payload)
+    assert rejected.status_code == 404
+
+    deliveries = client.get(
+        "/ingestion-deliveries",
+        params={"status": "failed", "source": "prometheus-alertmanager"},
+    ).json()
+    assert len(deliveries) == 1
+    failed = deliveries[0]
+    assert rejected.headers["x-ingestion-delivery-id"] == failed["delivery_id"]
+    assert failed["status"] == "failed"
+    assert failed["error_type"] == "ResourceNotFoundError"
+    assert "INC-REPLAY-1" in failed["error_detail"]
+    assert failed["payload_json"] == payload
+    assert len(failed["payload_sha256"]) == 64
+    assert failed["replayable"] is True
+
+    client.post(
+        "/incidents",
+        json={
+            "service_name": "payments-service",
+            "title": "Payment errors",
+            "summary": "Payment processing is failing",
+            "incident_id": "INC-REPLAY-1",
+            "started_at": "2026-09-11T12:00:00Z",
+        },
+    )
+    replay = client.post(
+        f"/ingestion-deliveries/{failed['delivery_id']}/replay"
+    )
+    assert replay.status_code == 200
+    replay_body = replay.json()
+    assert replay_body["delivery"]["status"] == "succeeded"
+    assert replay_body["delivery"]["replay_of_delivery_id"] == failed["delivery_id"]
+    assert replay_body["result"]["received"] == 1
+    assert len(client.get("/incidents/INC-REPLAY-1/alerts").json()) == 1
+
+    repeat = client.post(f"/ingestion-deliveries/{failed['delivery_id']}/replay")
+    assert repeat.status_code == 200
+    assert len(client.get("/incidents/INC-REPLAY-1/alerts").json()) == 1
+
+
+def test_unauthenticated_github_delivery_is_audited_but_not_replayable(
+    client: TestClient, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "github_webhook_secret", "configured-secret")
+    rejected = client.post(
+        "/ingestion/github/deployments",
+        json={"action": "created"},
+        headers={
+            "x-github-event": "deployment",
+            "x-hub-signature-256": "sha256=invalid",
+        },
+    )
+    assert rejected.status_code == 403
+
+    failed = client.get(
+        "/ingestion-deliveries",
+        params={"status": "failed", "source": "github-deployments"},
+    ).json()[0]
+    assert rejected.headers["x-ingestion-delivery-id"] == failed["delivery_id"]
+    assert failed["error_type"] == "IngestionAuthenticationError"
+    assert failed["replayable"] is False
+    assert failed["request_metadata_json"] == {"content_type": "application/json"}
+
+    replay = client.post(f"/ingestion-deliveries/{failed['delivery_id']}/replay")
+    assert replay.status_code == 409
+
+
+def test_malformed_ingestion_payload_is_audited_but_not_replayable(
+    client: TestClient,
+) -> None:
+    rejected = client.post(
+        "/v1/logs",
+        content=b"{not-json",
+        headers={"content-type": "application/json"},
+    )
+    assert rejected.status_code == 422
+
+    delivery_id = rejected.headers["x-ingestion-delivery-id"]
+    failed = client.get(f"/ingestion-deliveries/{delivery_id}").json()
+    assert failed["status"] == "failed"
+    assert failed["payload_json"] is None
+    assert failed["error_type"] == "InvalidIngestionPayloadError"
+    assert failed["replayable"] is False
+    assert client.post(
+        f"/ingestion-deliveries/{delivery_id}/replay"
+    ).status_code == 409
+
+
 def test_otlp_http_logs_normalize_structure_and_retry_idempotently(
     client: TestClient,
 ) -> None:

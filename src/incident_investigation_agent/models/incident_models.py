@@ -261,3 +261,31 @@ class AIRegressionRun(Base):
     passed_cases: Mapped[int] = mapped_column(Integer, nullable=False)
     results_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+
+
+class IngestionDelivery(Base):
+    """Audit record for an external ingestion request or replay attempt."""
+
+    __tablename__ = "ingestion_deliveries"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    delivery_id: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    source_delivery_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    event_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    payload_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_json: Mapped[dict[str, Any] | list[Any] | None] = mapped_column(JSON, nullable=True)
+    request_metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    error_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    replayable: Mapped[bool] = mapped_column(default=False, nullable=False)
+    replay_of_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ingestion_deliveries.id"), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    replay_of: Mapped["IngestionDelivery | None"] = relationship(remote_side=[id])

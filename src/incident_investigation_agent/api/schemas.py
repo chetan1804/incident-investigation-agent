@@ -519,6 +519,30 @@ class GitHubWebhookResponse(BaseModel):
     deployment: GitHubDeploymentIngestionResult | None = None
 
 
+class IngestionDeliveryResponse(BaseModel):
+    delivery_id: str
+    source: str
+    source_delivery_id: str | None
+    event_type: str | None
+    status: Literal["processing", "succeeded", "failed"]
+    payload_sha256: str
+    payload_size_bytes: int
+    payload_json: dict[str, Any] | list[Any] | None
+    request_metadata_json: dict[str, Any] | None
+    result_json: dict[str, Any] | None
+    error_type: str | None
+    error_detail: str | None
+    replayable: bool
+    replay_of_delivery_id: str | None
+    created_at: datetime
+    completed_at: datetime | None
+
+
+class IngestionReplayResponse(BaseModel):
+    delivery: IngestionDeliveryResponse
+    result: dict[str, Any]
+
+
 class ServiceDependencyCreateRequest(BaseModel):
     service_name: str = Field(min_length=1, max_length=255)
     depends_on_service_name: str = Field(min_length=1, max_length=255)

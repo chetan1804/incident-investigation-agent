@@ -20,6 +20,7 @@ from incident_investigation_agent.models.incident_models import (
     Deployment,
     Incident,
     IncidentStatus,
+    IngestionDelivery,
     LogEntry,
     MetricAnomaly,
     Service,
@@ -698,6 +699,83 @@ class IncidentRepository:
         return self.session.scalar(
             select(AIRegressionRun).where(AIRegressionRun.run_id == run_id)
         )
+
+    def create_ingestion_delivery(
+        self,
+        *,
+        source: str,
+        payload_sha256: str,
+        payload_size_bytes: int,
+        payload_json: dict | list | None,
+        source_delivery_id: str | None = None,
+        event_type: str | None = None,
+        request_metadata_json: dict | None = None,
+        replayable: bool = False,
+        replay_of_id: int | None = None,
+    ) -> IngestionDelivery:
+        delivery = IngestionDelivery(
+            delivery_id=f"ING-{uuid4()}",
+            source=source,
+            source_delivery_id=source_delivery_id,
+            event_type=event_type,
+            status="processing",
+            payload_sha256=payload_sha256,
+            payload_size_bytes=payload_size_bytes,
+            payload_json=payload_json,
+            request_metadata_json=request_metadata_json,
+            replayable=replayable,
+            replay_of_id=replay_of_id,
+        )
+        self.session.add(delivery)
+        self.session.commit()
+        self.session.refresh(delivery)
+        return delivery
+
+    def finish_ingestion_delivery(
+        self,
+        delivery: IngestionDelivery,
+        *,
+        status: str,
+        result_json: dict | None = None,
+        error_type: str | None = None,
+        error_detail: str | None = None,
+        replayable: bool | None = None,
+    ) -> IngestionDelivery:
+        if status == "failed":
+            self.session.rollback()
+            stored = self.get_ingestion_delivery(delivery.delivery_id)
+            if stored is not None:
+                delivery = stored
+        delivery.status = status
+        delivery.result_json = result_json
+        delivery.error_type = error_type
+        delivery.error_detail = error_detail[:4000] if error_detail else None
+        if replayable is not None:
+            delivery.replayable = replayable
+        delivery.completed_at = datetime.now(UTC)
+        self.session.commit()
+        self.session.refresh(delivery)
+        return delivery
+
+    def get_ingestion_delivery(self, delivery_id: str) -> IngestionDelivery | None:
+        return self.session.scalar(
+            select(IngestionDelivery).where(IngestionDelivery.delivery_id == delivery_id)
+        )
+
+    def list_ingestion_deliveries(
+        self,
+        *,
+        source: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[IngestionDelivery]:
+        statement = select(IngestionDelivery)
+        if source is not None:
+            statement = statement.where(IngestionDelivery.source == source)
+        if status is not None:
+            statement = statement.where(IngestionDelivery.status == status)
+        statement = statement.order_by(IngestionDelivery.created_at.desc()).limit(limit)
+        return list(self.session.scalars(statement).all())
 
     def _resolve_evidence_context(
         self, service_name: str, incident_id: str | None

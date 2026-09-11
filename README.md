@@ -24,6 +24,7 @@ Build an agentic AI system that helps engineers investigate production incidents
 - Normalize Prometheus Alertmanager webhooks into idempotent alert evidence.
 - Accept OTLP/HTTP JSON log batches with service, trace, and incident context.
 - Verify and normalize GitHub deployment lifecycle webhooks.
+- Audit production ingestion deliveries and safely replay eligible failures.
 - Manage schema changes with Alembic migrations.
 
 ## Structure
@@ -298,6 +299,36 @@ repository and GitHub deployment ID, so webhook retries and lifecycle transition
 do not duplicate evidence. Repository, actor, delivery, ref, status URL, and
 environment URL context is retained in deployment metadata.
 
+## Ingestion delivery audits and replay
+
+Alertmanager, OTLP log, and GitHub deployment requests create delivery audit
+records containing the source, payload hash and size, parsed JSON payload,
+sanitized request metadata, outcome, and failure details. Ingestion responses
+include the audit identifier in the `X-Ingestion-Delivery-ID` header when request
+processing reached the audit layer.
+
+List or inspect deliveries with:
+
+```text
+GET /ingestion-deliveries?status=failed&source=prometheus-alertmanager
+GET /ingestion-deliveries/ING-...
+```
+
+After correcting external context such as creating a referenced incident, replay
+an eligible failed delivery with:
+
+```text
+POST /ingestion-deliveries/ING-.../replay
+```
+
+Each replay is stored as a new audit linked to the original delivery. Existing
+source event IDs keep evidence ingestion idempotent if the same payload is
+replayed more than once. Successfully processed deliveries, malformed payloads,
+and unauthenticated GitHub deliveries cannot be replayed. Webhook signatures and
+other authorization headers are never persisted. Because parsed source payloads
+may contain operational data, protect the audit and replay endpoints with the
+same access controls as the rest of the operational API.
+
 ## AI-assisted analysis
 
 Set `OPENAI_API_KEY` to enable AI analysis. `OPENAI_MODEL` defaults to `gpt-5-mini`, and `AI_MAX_RANKED_SIGNALS` limits how much correlated evidence is sent to the model. The provider request uses structured output and `store=false`; generated items are rejected if they cite signal IDs that were not in the ranked evidence.
@@ -387,5 +418,6 @@ The existing `GET /incidents/{incident_id}/investigation` remains deterministic 
 
 ## Next step
 
-Persist ingestion delivery audits and failure details so operators can diagnose
-and safely replay rejected production-source payloads.
+Add configurable payload retention and sensitive-field redaction for ingestion
+audits, together with operator authentication and authorization for audit/replay
+endpoints.

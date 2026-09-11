@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import ValidationError
-
 from incident_investigation_agent.api.dependencies import get_hypothesis_generator, get_incident_service
 from incident_investigation_agent.api.schemas import (
     AIAnalysisFeedbackCreateRequest,
@@ -15,7 +13,6 @@ from incident_investigation_agent.api.schemas import (
     AIRegressionQualityGateResponse,
     AIRegressionRunResponse,
     AlertmanagerIngestionResponse,
-    AlertmanagerWebhookRequest,
     AlertCreateRequest,
     DeploymentCreateRequest,
     IncidentCreateRequest,
@@ -23,12 +20,12 @@ from incident_investigation_agent.api.schemas import (
     IncidentResolutionResponse,
     IncidentResponse,
     InvestigationResponse,
-    GitHubDeploymentWebhookPayload,
     GitHubWebhookResponse,
+    IngestionDeliveryResponse,
+    IngestionReplayResponse,
     LogCreateRequest,
     MetricAnomalyCreateRequest,
     MetricAnomalyResponse,
-    OtlpExportLogsRequest,
     OtlpExportLogsResponse,
     ServiceDependencyCreateRequest,
     ServiceDependencyResponse,
@@ -47,6 +44,7 @@ from incident_investigation_agent.exceptions import (
 from incident_investigation_agent.models.incident_models import (
     AIAnalysisRecord,
     AIRegressionRun,
+    IngestionDelivery,
     MetricAnomaly,
 )
 from incident_investigation_agent.services.ai_analysis_service import (
@@ -59,6 +57,7 @@ from incident_investigation_agent.services.ai_regression_service import (
 )
 from incident_investigation_agent.services.alertmanager_adapter import AlertmanagerAdapter
 from incident_investigation_agent.services.incident_service import IncidentService
+from incident_investigation_agent.services.ingestion_delivery_service import IngestionDeliveryService
 from incident_investigation_agent.services.github_deployment_adapter import (
     GitHubDeploymentAdapter,
 )
@@ -67,14 +66,50 @@ from incident_investigation_agent.services.otlp_log_adapter import OtlpLogAdapte
 app = FastAPI(title="Incident Investigation Agent", version="0.1.0")
 
 
+def _serialize_ingestion_delivery(delivery: IngestionDelivery) -> dict:
+    return {
+        "delivery_id": delivery.delivery_id,
+        "source": delivery.source,
+        "source_delivery_id": delivery.source_delivery_id,
+        "event_type": delivery.event_type,
+        "status": delivery.status,
+        "payload_sha256": delivery.payload_sha256,
+        "payload_size_bytes": delivery.payload_size_bytes,
+        "payload_json": delivery.payload_json,
+        "request_metadata_json": delivery.request_metadata_json,
+        "result_json": delivery.result_json,
+        "error_type": delivery.error_type,
+        "error_detail": delivery.error_detail,
+        "replayable": delivery.replayable,
+        "replay_of_delivery_id": (
+            delivery.replay_of.delivery_id if delivery.replay_of else None
+        ),
+        "created_at": delivery.created_at,
+        "completed_at": delivery.completed_at,
+    }
+
+
+def _ingestion_error_headers(exc: Exception) -> dict[str, str] | None:
+    delivery_id = getattr(exc, "ingestion_delivery_id", None)
+    return {"X-Ingestion-Delivery-ID": delivery_id} if delivery_id else None
+
+
 @app.exception_handler(ResourceNotFoundError)
 def handle_not_found(_request: Request, exc: ResourceNotFoundError) -> JSONResponse:
-    return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(exc)})
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content={"detail": str(exc)},
+        headers=_ingestion_error_headers(exc),
+    )
 
 
 @app.exception_handler(ResourceConflictError)
 def handle_conflict(_request: Request, exc: ResourceConflictError) -> JSONResponse:
-    return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(exc)})
+    return JSONResponse(
+        status_code=status.HTTP_409_CONFLICT,
+        content={"detail": str(exc)},
+        headers=_ingestion_error_headers(exc),
+    )
 
 
 @app.exception_handler(AIAnalysisUnavailableError)
@@ -99,6 +134,7 @@ def handle_invalid_ingestion(
     return JSONResponse(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         content={"detail": str(exc)},
+        headers=_ingestion_error_headers(exc),
     )
 
 
@@ -109,6 +145,7 @@ def handle_ingestion_authentication(
     return JSONResponse(
         status_code=status.HTTP_403_FORBIDDEN,
         content={"detail": str(exc)},
+        headers=_ingestion_error_headers(exc),
     )
 
 
@@ -119,6 +156,7 @@ def handle_ingestion_unavailable(
     return JSONResponse(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         content={"detail": str(exc)},
+        headers=_ingestion_error_headers(exc),
     )
 
 
@@ -225,11 +263,35 @@ def create_log(
 
 
 @app.post("/v1/logs", response_model=OtlpExportLogsResponse)
-def ingest_otlp_logs(
-    payload: OtlpExportLogsRequest,
+async def ingest_otlp_logs(
+    request: Request,
+    response: Response,
     incident_service: IncidentService = Depends(get_incident_service),
 ) -> OtlpExportLogsResponse:
-    OtlpLogAdapter(incident_service).ingest(payload)
+    body = await request.body()
+    audit = IngestionDeliveryService(incident_service)
+    payload_json = audit.decode_json(body)
+    delivery = audit.begin(
+        source=OtlpLogAdapter.source,
+        body=body,
+        payload_json=payload_json,
+        request_metadata={"content_type": request.headers.get("content-type")},
+        replayable=payload_json is not None,
+    )
+    try:
+        result = audit.process(delivery)
+    except Exception as exc:
+        audit.fail(
+            delivery,
+            exc,
+            replayable=(
+                payload_json is not None
+                and not isinstance(exc, InvalidIngestionPayloadError)
+            ),
+        )
+        raise
+    audit.succeed(delivery, result)
+    response.headers["X-Ingestion-Delivery-ID"] = delivery.delivery_id
     return OtlpExportLogsResponse()
 
 
@@ -247,11 +309,36 @@ def create_alert(
     response_model=AlertmanagerIngestionResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
-def ingest_alertmanager_webhook(
-    payload: AlertmanagerWebhookRequest,
+async def ingest_alertmanager_webhook(
+    request: Request,
+    response: Response,
     incident_service: IncidentService = Depends(get_incident_service),
 ) -> dict:
-    return AlertmanagerAdapter(incident_service).ingest(payload)
+    body = await request.body()
+    audit = IngestionDeliveryService(incident_service)
+    payload_json = audit.decode_json(body)
+    delivery = audit.begin(
+        source=AlertmanagerAdapter.source,
+        body=body,
+        payload_json=payload_json,
+        request_metadata={"content_type": request.headers.get("content-type")},
+        replayable=payload_json is not None,
+    )
+    try:
+        result = audit.process(delivery)
+    except Exception as exc:
+        audit.fail(
+            delivery,
+            exc,
+            replayable=(
+                payload_json is not None
+                and not isinstance(exc, InvalidIngestionPayloadError)
+            ),
+        )
+        raise
+    audit.succeed(delivery, result)
+    response.headers["X-Ingestion-Delivery-ID"] = delivery.delivery_id
+    return result
 
 
 def _serialize_metric_anomaly(
@@ -306,28 +393,90 @@ def create_deployment(
 )
 async def ingest_github_deployment(
     request: Request,
+    response: Response,
     incident_service: IncidentService = Depends(get_incident_service),
 ) -> dict:
     body = await request.body()
-    GitHubDeploymentAdapter.verify_signature(
-        body=body,
-        signature=request.headers.get("x-hub-signature-256"),
-        secret=settings.github_webhook_secret,
-    )
     event = request.headers.get("x-github-event")
-    if event == "ping":
-        return {"event": "ping", "status": "ignored", "deployment": None}
-    if not event:
-        raise InvalidIngestionPayloadError("X-GitHub-Event header is required")
-    try:
-        payload = GitHubDeploymentWebhookPayload.model_validate_json(body)
-    except ValidationError as exc:
-        raise InvalidIngestionPayloadError("Invalid GitHub webhook payload") from exc
-    return GitHubDeploymentAdapter(incident_service).ingest(
-        event=event,
-        delivery_id=request.headers.get("x-github-delivery"),
-        payload=payload,
+    audit = IngestionDeliveryService(incident_service)
+    payload_json = audit.decode_json(body)
+    delivery = audit.begin(
+        source=GitHubDeploymentAdapter.source,
+        body=body,
+        payload_json=payload_json,
+        source_delivery_id=request.headers.get("x-github-delivery"),
+        event_type=event,
+        request_metadata={"content_type": request.headers.get("content-type")},
+        replayable=False,
     )
+    try:
+        GitHubDeploymentAdapter.verify_signature(
+            body=body,
+            signature=request.headers.get("x-hub-signature-256"),
+            secret=settings.github_webhook_secret,
+        )
+        result = audit.process(delivery)
+    except Exception as exc:
+        audit.fail(
+            delivery,
+            exc,
+            replayable=(
+                payload_json is not None
+                and not isinstance(
+                    exc,
+                    (
+                        IngestionAuthenticationError,
+                        IngestionUnavailableError,
+                        InvalidIngestionPayloadError,
+                    ),
+                )
+            ),
+        )
+        raise
+    audit.succeed(delivery, result)
+    response.headers["X-Ingestion-Delivery-ID"] = delivery.delivery_id
+    return result
+
+
+@app.get(
+    "/ingestion-deliveries",
+    response_model=list[IngestionDeliveryResponse],
+)
+def list_ingestion_deliveries(
+    source: str | None = Query(default=None, max_length=64),
+    delivery_status: str | None = Query(default=None, alias="status", max_length=32),
+    limit: int = Query(default=50, ge=1, le=100),
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> list[dict]:
+    records = incident_service.repository.list_ingestion_deliveries(
+        source=source, status=delivery_status, limit=limit
+    )
+    return [_serialize_ingestion_delivery(item) for item in records]
+
+
+@app.get(
+    "/ingestion-deliveries/{delivery_id}",
+    response_model=IngestionDeliveryResponse,
+)
+def get_ingestion_delivery(
+    delivery_id: str,
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> dict:
+    delivery = IngestionDeliveryService(incident_service).get(delivery_id)
+    return _serialize_ingestion_delivery(delivery)
+
+
+@app.post(
+    "/ingestion-deliveries/{delivery_id}/replay",
+    response_model=IngestionReplayResponse,
+)
+def replay_ingestion_delivery(
+    delivery_id: str,
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> dict:
+    audit = IngestionDeliveryService(incident_service)
+    attempt, result = audit.replay(audit.get(delivery_id))
+    return {"delivery": _serialize_ingestion_delivery(attempt), "result": result}
 
 
 @app.post(
