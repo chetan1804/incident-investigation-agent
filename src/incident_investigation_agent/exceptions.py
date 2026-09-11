@@ -32,3 +32,15 @@ class IngestionAuthenticationError(IncidentInvestigationError):
 
 class IngestionUnavailableError(IncidentInvestigationError):
     """Raised when an ingestion adapter is not configured for use."""
+
+
+class OperatorAuthenticationError(IncidentInvestigationError):
+    """Raised when an operator bearer credential is missing or invalid."""
+
+
+class OperatorAuthorizationError(IncidentInvestigationError):
+    """Raised when an authenticated operator lacks the required permission."""
+
+
+class OperatorAuthenticationUnavailableError(IncidentInvestigationError):
+    """Raised when operator API authentication has not been configured."""

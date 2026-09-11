@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from incident_investigation_agent.api.app import app
 from incident_investigation_agent.api.dependencies import get_incident_service
+from incident_investigation_agent.config.settings import settings
 from incident_investigation_agent.database.base import Base
 from incident_investigation_agent.repositories.incident_repository import IncidentRepository
 from incident_investigation_agent.services.incident_service import IncidentService
@@ -33,8 +34,15 @@ def client(db_session: Session) -> Generator[TestClient, None, None]:
         return IncidentService(IncidentRepository(db_session))
 
     app.dependency_overrides[get_incident_service] = override_incident_service
+    previous_read_key = settings.ingestion_audit_read_api_key
+    previous_replay_key = settings.ingestion_audit_replay_api_key
+    settings.ingestion_audit_read_api_key = "test-audit-read-key"
+    settings.ingestion_audit_replay_api_key = "test-audit-replay-key"
     try:
         with TestClient(app) as test_client:
+            test_client.headers["authorization"] = "Bearer test-audit-replay-key"
             yield test_client
     finally:
+        settings.ingestion_audit_read_api_key = previous_read_key
+        settings.ingestion_audit_replay_api_key = previous_replay_key
         app.dependency_overrides.clear()

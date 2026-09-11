@@ -277,6 +277,13 @@ class IngestionDelivery(Base):
     payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     payload_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     payload_json: Mapped[dict[str, Any] | list[Any] | None] = mapped_column(JSON, nullable=True)
+    payload_redacted: Mapped[bool] = mapped_column(default=False, nullable=False)
+    payload_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, index=True
+    )
+    payload_purged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     request_metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     error_type: Mapped[str | None] = mapped_column(String(128), nullable=True)

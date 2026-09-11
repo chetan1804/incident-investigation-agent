@@ -311,7 +311,10 @@ List or inspect deliveries with:
 
 ```text
 GET /ingestion-deliveries?status=failed&source=prometheus-alertmanager
+Authorization: Bearer <audit-read-or-replay-key>
+
 GET /ingestion-deliveries/ING-...
+Authorization: Bearer <audit-read-or-replay-key>
 ```
 
 After correcting external context such as creating a referenced incident, replay
@@ -319,15 +322,38 @@ an eligible failed delivery with:
 
 ```text
 POST /ingestion-deliveries/ING-.../replay
+Authorization: Bearer <replay-key>
 ```
 
 Each replay is stored as a new audit linked to the original delivery. Existing
 source event IDs keep evidence ingestion idempotent if the same payload is
 replayed more than once. Successfully processed deliveries, malformed payloads,
 and unauthenticated GitHub deliveries cannot be replayed. Webhook signatures and
-other authorization headers are never persisted. Because parsed source payloads
-may contain operational data, protect the audit and replay endpoints with the
-same access controls as the rest of the operational API.
+other authorization headers are never persisted.
+
+Configure operator access and payload protection with:
+
+```text
+INGESTION_AUDIT_READ_API_KEY=<high-entropy-read-key>
+INGESTION_AUDIT_REPLAY_API_KEY=<separate-high-entropy-replay-key>
+INGESTION_AUDIT_PAYLOAD_RETENTION_DAYS=30
+INGESTION_AUDIT_SENSITIVE_FIELDS=authorization,token,access_token,refresh_token,api_key,password,secret,client_secret
+```
+
+The read key can list and inspect audits; the replay key can also replay failed
+deliveries and purge expired payloads. Audit endpoints fail closed with HTTP 503
+until their required key is configured. Sensitive keys are matched recursively
+and case-insensitively, and their values are replaced with `[REDACTED]` before
+persistence. A redacted payload is never replayable.
+
+Expired payload JSON is cleared automatically during ingestion and audit access,
+while the delivery metadata and outcome remain available. Operators can also
+trigger cleanup from a scheduled job:
+
+```text
+POST /ingestion-deliveries/purge-expired
+Authorization: Bearer <replay-key>
+```
 
 ## AI-assisted analysis
 
@@ -418,6 +444,5 @@ The existing `GET /incidents/{incident_id}/investigation` remains deterministic 
 
 ## Next step
 
-Add configurable payload retention and sensitive-field redaction for ingestion
-audits, together with operator authentication and authorization for audit/replay
-endpoints.
+Expose ingestion delivery health metrics and alerts, including failure rates,
+replay outcomes, payload purges, and source-specific latency.

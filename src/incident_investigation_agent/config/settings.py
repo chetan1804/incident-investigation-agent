@@ -27,6 +27,14 @@ class Settings(BaseSettings):
     openai_model: str = Field(default="gpt-5-mini", min_length=1)
     ai_max_ranked_signals: int = Field(default=20, ge=1, le=100)
     github_webhook_secret: str | None = Field(default=None, repr=False)
+    ingestion_audit_read_api_key: str | None = Field(default=None, repr=False)
+    ingestion_audit_replay_api_key: str | None = Field(default=None, repr=False)
+    ingestion_audit_payload_retention_days: int = Field(default=30, ge=0, le=3650)
+    ingestion_audit_sensitive_fields: str = Field(
+        default=(
+            "authorization,token,access_token,refresh_token,api_key,password,secret,client_secret"
+        )
+    )
 
 
 settings = Settings()

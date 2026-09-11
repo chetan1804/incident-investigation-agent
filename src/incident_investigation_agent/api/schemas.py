@@ -528,6 +528,9 @@ class IngestionDeliveryResponse(BaseModel):
     payload_sha256: str
     payload_size_bytes: int
     payload_json: dict[str, Any] | list[Any] | None
+    payload_redacted: bool
+    payload_expires_at: datetime
+    payload_purged_at: datetime | None
     request_metadata_json: dict[str, Any] | None
     result_json: dict[str, Any] | None
     error_type: str | None
@@ -541,6 +544,10 @@ class IngestionDeliveryResponse(BaseModel):
 class IngestionReplayResponse(BaseModel):
     delivery: IngestionDeliveryResponse
     result: dict[str, Any]
+
+
+class IngestionPayloadPurgeResponse(BaseModel):
+    purged_deliveries: int
 
 
 class ServiceDependencyCreateRequest(BaseModel):

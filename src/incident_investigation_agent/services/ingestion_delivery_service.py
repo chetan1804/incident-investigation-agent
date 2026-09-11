@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import json
 from typing import Any
@@ -7,6 +8,7 @@ from typing import Any
 from fastapi.encoders import jsonable_encoder
 from pydantic import ValidationError
 
+from incident_investigation_agent.config.settings import settings
 from incident_investigation_agent.exceptions import (
     InvalidIngestionPayloadError,
     ResourceConflictError,
@@ -52,15 +54,29 @@ class IngestionDeliveryService:
         replayable: bool = False,
         replay_of_id: int | None = None,
     ) -> IngestionDelivery:
+        now = datetime.now(UTC)
+        self.repository.purge_expired_ingestion_payloads(now=now)
+        retained_payload, payload_redacted = self._redact(payload_json)
+        retention_days = settings.ingestion_audit_payload_retention_days
+        payload_purged_at = now if retention_days == 0 else None
+        if payload_purged_at is not None:
+            retained_payload = None
         return self.repository.create_ingestion_delivery(
             source=source,
             source_delivery_id=source_delivery_id,
             event_type=event_type,
             payload_sha256=sha256(body).hexdigest(),
             payload_size_bytes=len(body),
-            payload_json=payload_json,
+            payload_json=retained_payload,
+            payload_redacted=payload_redacted,
+            payload_expires_at=now + timedelta(days=retention_days),
+            payload_purged_at=payload_purged_at,
             request_metadata_json=request_metadata,
-            replayable=replayable,
+            replayable=(
+                replayable
+                and retained_payload is not None
+                and not payload_redacted
+            ),
             replay_of_id=replay_of_id,
         )
 
@@ -88,37 +104,46 @@ class IngestionDeliveryService:
         )
         setattr(exc, "ingestion_delivery_id", delivery.delivery_id)
 
-    def process(self, delivery: IngestionDelivery) -> dict[str, Any]:
+    def process(
+        self,
+        delivery: IngestionDelivery,
+        payload_json: dict[str, Any] | list[Any] | None = None,
+    ) -> dict[str, Any]:
         from incident_investigation_agent.api.schemas import (
             AlertmanagerWebhookRequest,
             GitHubDeploymentWebhookPayload,
             OtlpExportLogsRequest,
         )
 
-        if delivery.payload_json is None:
+        payload = payload_json if payload_json is not None else delivery.payload_json
+        if payload is None:
             raise InvalidIngestionPayloadError("Request body must be a JSON object")
         try:
             if delivery.source == AlertmanagerAdapter.source:
-                payload = AlertmanagerWebhookRequest.model_validate(delivery.payload_json)
-                return AlertmanagerAdapter(self.incident_service).ingest(payload)
+                validated = AlertmanagerWebhookRequest.model_validate(payload)
+                return AlertmanagerAdapter(self.incident_service).ingest(validated)
             if delivery.source == OtlpLogAdapter.source:
-                payload = OtlpExportLogsRequest.model_validate(delivery.payload_json)
-                count = OtlpLogAdapter(self.incident_service).ingest(payload)
+                validated = OtlpExportLogsRequest.model_validate(payload)
+                count = OtlpLogAdapter(self.incident_service).ingest(validated)
                 return {"accepted_log_records": count}
             if delivery.source == GitHubDeploymentAdapter.source:
                 if delivery.event_type == "ping":
                     return {"event": "ping", "status": "ignored", "deployment": None}
                 if not delivery.event_type:
                     raise InvalidIngestionPayloadError("X-GitHub-Event header is required")
-                payload = GitHubDeploymentWebhookPayload.model_validate(delivery.payload_json)
+                validated = GitHubDeploymentWebhookPayload.model_validate(payload)
                 return GitHubDeploymentAdapter(self.incident_service).ingest(
                     event=delivery.event_type,
                     delivery_id=delivery.source_delivery_id,
-                    payload=payload,
+                    payload=validated,
                 )
         except ValidationError as exc:
+            validation_details = "; ".join(
+                f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
+                for error in exc.errors(include_url=False, include_input=False)
+            )
             raise InvalidIngestionPayloadError(
-                f"Invalid {delivery.source} payload: {exc}"
+                f"Invalid {delivery.source} payload: {validation_details}"
             ) from exc
         raise InvalidIngestionPayloadError(
             f"Ingestion source '{delivery.source}' does not support replay"
@@ -127,6 +152,10 @@ class IngestionDeliveryService:
     def replay(self, original: IngestionDelivery) -> tuple[IngestionDelivery, dict[str, Any]]:
         if original.status != "failed":
             raise ResourceConflictError("Only failed ingestion deliveries can be replayed")
+        if original.payload_redacted:
+            raise ResourceConflictError(
+                "This delivery cannot be replayed because sensitive fields were redacted"
+            )
         if not original.replayable or original.payload_json is None:
             raise ResourceConflictError(
                 "This delivery cannot be replayed because its payload was invalid or unauthenticated"
@@ -160,9 +189,59 @@ class IngestionDeliveryService:
         return attempt, result
 
     def get(self, delivery_id: str) -> IngestionDelivery:
+        self.purge_expired()
         delivery = self.repository.get_ingestion_delivery(delivery_id)
         if delivery is None:
             raise ResourceNotFoundError(
                 f"Ingestion delivery '{delivery_id}' was not found"
             )
         return delivery
+
+    def list(
+        self,
+        *,
+        source: str | None = None,
+        status: str | None = None,
+        limit: int = 50,
+    ) -> list[IngestionDelivery]:
+        self.purge_expired()
+        return self.repository.list_ingestion_deliveries(
+            source=source, status=status, limit=limit
+        )
+
+    def purge_expired(self) -> int:
+        return self.repository.purge_expired_ingestion_payloads(now=datetime.now(UTC))
+
+    @staticmethod
+    def _redact(
+        payload: dict[str, Any] | list[Any] | None,
+    ) -> tuple[dict[str, Any] | list[Any] | None, bool]:
+        sensitive_fields = {
+            field.strip().casefold()
+            for field in settings.ingestion_audit_sensitive_fields.split(",")
+            if field.strip()
+        }
+
+        def visit(value: Any) -> tuple[Any, bool]:
+            if isinstance(value, dict):
+                redacted: dict[str, Any] = {}
+                changed = False
+                for key, item in value.items():
+                    if key.casefold() in sensitive_fields:
+                        redacted[key] = "[REDACTED]"
+                        changed = True
+                    else:
+                        redacted[key], child_changed = visit(item)
+                        changed = changed or child_changed
+                return redacted, changed
+            if isinstance(value, list):
+                redacted_items = []
+                changed = False
+                for item in value:
+                    redacted_item, child_changed = visit(item)
+                    redacted_items.append(redacted_item)
+                    changed = changed or child_changed
+                return redacted_items, changed
+            return value, False
+
+        return visit(payload)

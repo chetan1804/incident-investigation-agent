@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
-from incident_investigation_agent.api.dependencies import get_hypothesis_generator, get_incident_service
+from incident_investigation_agent.api.dependencies import (
+    get_hypothesis_generator,
+    get_incident_service,
+    require_ingestion_audit_reader,
+    require_ingestion_replay_operator,
+)
 from incident_investigation_agent.api.schemas import (
     AIAnalysisFeedbackCreateRequest,
     AIAnalysisFeedbackResponse,
@@ -22,6 +27,7 @@ from incident_investigation_agent.api.schemas import (
     InvestigationResponse,
     GitHubWebhookResponse,
     IngestionDeliveryResponse,
+    IngestionPayloadPurgeResponse,
     IngestionReplayResponse,
     LogCreateRequest,
     MetricAnomalyCreateRequest,
@@ -38,6 +44,9 @@ from incident_investigation_agent.exceptions import (
     IngestionUnavailableError,
     InvalidFeedbackError,
     InvalidIngestionPayloadError,
+    OperatorAuthenticationError,
+    OperatorAuthenticationUnavailableError,
+    OperatorAuthorizationError,
     ResourceConflictError,
     ResourceNotFoundError,
 )
@@ -76,6 +85,9 @@ def _serialize_ingestion_delivery(delivery: IngestionDelivery) -> dict:
         "payload_sha256": delivery.payload_sha256,
         "payload_size_bytes": delivery.payload_size_bytes,
         "payload_json": delivery.payload_json,
+        "payload_redacted": delivery.payload_redacted,
+        "payload_expires_at": delivery.payload_expires_at,
+        "payload_purged_at": delivery.payload_purged_at,
         "request_metadata_json": delivery.request_metadata_json,
         "result_json": delivery.result_json,
         "error_type": delivery.error_type,
@@ -157,6 +169,37 @@ def handle_ingestion_unavailable(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         content={"detail": str(exc)},
         headers=_ingestion_error_headers(exc),
+    )
+
+
+@app.exception_handler(OperatorAuthenticationError)
+def handle_operator_authentication(
+    _request: Request, exc: OperatorAuthenticationError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        content={"detail": str(exc)},
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+@app.exception_handler(OperatorAuthorizationError)
+def handle_operator_authorization(
+    _request: Request, exc: OperatorAuthorizationError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_403_FORBIDDEN,
+        content={"detail": str(exc)},
+    )
+
+
+@app.exception_handler(OperatorAuthenticationUnavailableError)
+def handle_operator_authentication_unavailable(
+    _request: Request, exc: OperatorAuthenticationUnavailableError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={"detail": str(exc)},
     )
 
 
@@ -279,7 +322,7 @@ async def ingest_otlp_logs(
         replayable=payload_json is not None,
     )
     try:
-        result = audit.process(delivery)
+        result = audit.process(delivery, payload_json)
     except Exception as exc:
         audit.fail(
             delivery,
@@ -325,7 +368,7 @@ async def ingest_alertmanager_webhook(
         replayable=payload_json is not None,
     )
     try:
-        result = audit.process(delivery)
+        result = audit.process(delivery, payload_json)
     except Exception as exc:
         audit.fail(
             delivery,
@@ -415,7 +458,7 @@ async def ingest_github_deployment(
             signature=request.headers.get("x-hub-signature-256"),
             secret=settings.github_webhook_secret,
         )
-        result = audit.process(delivery)
+        result = audit.process(delivery, payload_json)
     except Exception as exc:
         audit.fail(
             delivery,
@@ -446,12 +489,25 @@ def list_ingestion_deliveries(
     source: str | None = Query(default=None, max_length=64),
     delivery_status: str | None = Query(default=None, alias="status", max_length=32),
     limit: int = Query(default=50, ge=1, le=100),
+    _operator: None = Depends(require_ingestion_audit_reader),
     incident_service: IncidentService = Depends(get_incident_service),
 ) -> list[dict]:
-    records = incident_service.repository.list_ingestion_deliveries(
+    records = IngestionDeliveryService(incident_service).list(
         source=source, status=delivery_status, limit=limit
     )
     return [_serialize_ingestion_delivery(item) for item in records]
+
+
+@app.post(
+    "/ingestion-deliveries/purge-expired",
+    response_model=IngestionPayloadPurgeResponse,
+)
+def purge_expired_ingestion_payloads(
+    _operator: None = Depends(require_ingestion_replay_operator),
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> dict:
+    purged = IngestionDeliveryService(incident_service).purge_expired()
+    return {"purged_deliveries": purged}
 
 
 @app.get(
@@ -460,6 +516,7 @@ def list_ingestion_deliveries(
 )
 def get_ingestion_delivery(
     delivery_id: str,
+    _operator: None = Depends(require_ingestion_audit_reader),
     incident_service: IncidentService = Depends(get_incident_service),
 ) -> dict:
     delivery = IngestionDeliveryService(incident_service).get(delivery_id)
@@ -472,6 +529,7 @@ def get_ingestion_delivery(
 )
 def replay_ingestion_delivery(
     delivery_id: str,
+    _operator: None = Depends(require_ingestion_replay_operator),
     incident_service: IncidentService = Depends(get_incident_service),
 ) -> dict:
     audit = IngestionDeliveryService(incident_service)

@@ -707,6 +707,9 @@ class IncidentRepository:
         payload_sha256: str,
         payload_size_bytes: int,
         payload_json: dict | list | None,
+        payload_redacted: bool,
+        payload_expires_at: datetime,
+        payload_purged_at: datetime | None = None,
         source_delivery_id: str | None = None,
         event_type: str | None = None,
         request_metadata_json: dict | None = None,
@@ -722,6 +725,9 @@ class IncidentRepository:
             payload_sha256=payload_sha256,
             payload_size_bytes=payload_size_bytes,
             payload_json=payload_json,
+            payload_redacted=payload_redacted,
+            payload_expires_at=payload_expires_at,
+            payload_purged_at=payload_purged_at,
             request_metadata_json=request_metadata_json,
             replayable=replayable,
             replay_of_id=replay_of_id,
@@ -751,7 +757,12 @@ class IncidentRepository:
         delivery.error_type = error_type
         delivery.error_detail = error_detail[:4000] if error_detail else None
         if replayable is not None:
-            delivery.replayable = replayable
+            delivery.replayable = (
+                replayable
+                and delivery.payload_json is not None
+                and not delivery.payload_redacted
+                and delivery.payload_purged_at is None
+            )
         delivery.completed_at = datetime.now(UTC)
         self.session.commit()
         self.session.refresh(delivery)
@@ -776,6 +787,23 @@ class IncidentRepository:
             statement = statement.where(IngestionDelivery.status == status)
         statement = statement.order_by(IngestionDelivery.created_at.desc()).limit(limit)
         return list(self.session.scalars(statement).all())
+
+    def purge_expired_ingestion_payloads(self, *, now: datetime) -> int:
+        deliveries = list(
+            self.session.scalars(
+                select(IngestionDelivery).where(
+                    IngestionDelivery.payload_json.is_not(None),
+                    IngestionDelivery.payload_expires_at <= now,
+                )
+            ).all()
+        )
+        for delivery in deliveries:
+            delivery.payload_json = None
+            delivery.payload_purged_at = now
+            delivery.replayable = False
+        if deliveries:
+            self.session.commit()
+        return len(deliveries)
 
     def _resolve_evidence_context(
         self, service_name: str, incident_id: str | None

@@ -1,13 +1,17 @@
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 import hmac
 import json
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from incident_investigation_agent.api.app import app
 from incident_investigation_agent.api.dependencies import get_hypothesis_generator
 from incident_investigation_agent.config.settings import settings
 from incident_investigation_agent.exceptions import AIAnalysisError
+from incident_investigation_agent.models.incident_models import IngestionDelivery
 from incident_investigation_agent.services.ai_analysis_service import (
     AIAnalysis,
     AIHypothesis,
@@ -589,6 +593,128 @@ def test_malformed_ingestion_payload_is_audited_but_not_replayable(
     assert client.post(
         f"/ingestion-deliveries/{delivery_id}/replay"
     ).status_code == 409
+
+
+def test_ingestion_audit_endpoints_enforce_reader_and_replay_roles(
+    client: TestClient, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "ingestion_audit_read_api_key", None)
+    monkeypatch.setattr(settings, "ingestion_audit_replay_api_key", None)
+    assert client.get("/ingestion-deliveries").status_code == 503
+
+    monkeypatch.setattr(
+        settings, "ingestion_audit_read_api_key", "test-audit-read-key"
+    )
+    monkeypatch.setattr(
+        settings, "ingestion_audit_replay_api_key", "test-audit-replay-key"
+    )
+    missing = client.get(
+        "/ingestion-deliveries", headers={"authorization": ""}
+    )
+    invalid = client.get(
+        "/ingestion-deliveries",
+        headers={"authorization": "Bearer wrong-key"},
+    )
+    reader = client.get(
+        "/ingestion-deliveries",
+        headers={"authorization": "Bearer test-audit-read-key"},
+    )
+    forbidden_replay = client.post(
+        "/ingestion-deliveries/ING-does-not-matter/replay",
+        headers={"authorization": "Bearer test-audit-read-key"},
+    )
+    assert missing.status_code == 401
+    assert missing.headers["www-authenticate"] == "Bearer"
+    assert invalid.status_code == 401
+    assert reader.status_code == 200
+    assert forbidden_replay.status_code == 403
+
+
+def test_sensitive_audit_fields_are_recursively_redacted(
+    client: TestClient,
+) -> None:
+    payload = {
+        "commonLabels": {
+            "service": "payments-service",
+            "incident_id": "INC-REDACTION-MISSING",
+            "api_key": "must-not-be-stored",
+        },
+        "alerts": [
+            {
+                "labels": {"alertname": "PaymentErrors"},
+                "annotations": {"password": "also-secret"},
+                "startsAt": "2026-09-11T12:00:00Z",
+            }
+        ],
+    }
+    rejected = client.post("/ingestion/prometheus/alertmanager", json=payload)
+    assert rejected.status_code == 404
+
+    delivery = client.get(
+        f"/ingestion-deliveries/{rejected.headers['x-ingestion-delivery-id']}"
+    ).json()
+    assert delivery["payload_redacted"] is True
+    assert delivery["payload_json"]["commonLabels"]["api_key"] == "[REDACTED]"
+    assert delivery["payload_json"]["alerts"][0]["annotations"]["password"] == "[REDACTED]"
+    assert delivery["replayable"] is False
+    assert "must-not-be-stored" not in json.dumps(delivery)
+    assert "also-secret" not in json.dumps(delivery)
+
+
+def test_audit_payload_retention_purges_replay_material(
+    client: TestClient, db_session: Session, monkeypatch
+) -> None:
+    monkeypatch.setattr(settings, "ingestion_audit_payload_retention_days", 1)
+    accepted = client.post(
+        "/ingestion/prometheus/alertmanager",
+        json={
+            "commonLabels": {"service": "retention-service"},
+            "alerts": [
+                {
+                    "labels": {"alertname": "RetentionAlert"},
+                    "startsAt": "2026-09-11T12:00:00Z",
+                }
+            ],
+        },
+    )
+    assert accepted.status_code == 202
+    delivery_id = accepted.headers["x-ingestion-delivery-id"]
+    delivery = db_session.scalar(
+        select(IngestionDelivery).where(IngestionDelivery.delivery_id == delivery_id)
+    )
+    assert delivery is not None
+    delivery.payload_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    db_session.commit()
+
+    purge = client.post("/ingestion-deliveries/purge-expired")
+    assert purge.status_code == 200
+    assert purge.json() == {"purged_deliveries": 1}
+
+    audited = client.get(f"/ingestion-deliveries/{delivery_id}").json()
+    assert audited["payload_json"] is None
+    assert audited["payload_purged_at"] is not None
+    assert audited["replayable"] is False
+
+    monkeypatch.setattr(settings, "ingestion_audit_payload_retention_days", 0)
+    no_retention = client.post(
+        "/ingestion/prometheus/alertmanager",
+        json={
+            "commonLabels": {"service": "retention-service"},
+            "alerts": [
+                {
+                    "labels": {"alertname": "NoRetentionAlert"},
+                    "startsAt": "2026-09-11T12:01:00Z",
+                }
+            ],
+        },
+    )
+    assert no_retention.status_code == 202
+    immediate = client.get(
+        "/ingestion-deliveries/"
+        + no_retention.headers["x-ingestion-delivery-id"]
+    ).json()
+    assert immediate["payload_json"] is None
+    assert immediate["payload_purged_at"] is not None
 
 
 def test_otlp_http_logs_normalize_structure_and_retry_idempotently(
