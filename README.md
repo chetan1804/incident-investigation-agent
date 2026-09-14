@@ -25,6 +25,7 @@ Build an agentic AI system that helps engineers investigate production incidents
 - Accept OTLP/HTTP JSON log batches with service, trace, and incident context.
 - Verify and normalize GitHub deployment lifecycle webhooks.
 - Audit production ingestion deliveries and safely replay eligible failures.
+- Monitor per-source ingestion health and expose threshold alerts.
 - Manage schema changes with Alembic migrations.
 
 ## Structure
@@ -355,6 +356,40 @@ POST /ingestion-deliveries/purge-expired
 Authorization: Bearer <replay-key>
 ```
 
+## Ingestion delivery health
+
+Poll the protected health endpoint from an operator dashboard or monitoring job:
+
+```text
+GET /ingestion-deliveries/health?window_minutes=60&minimum_completed=10&failure_rate_threshold=0.1&latency_threshold_ms=1000
+Authorization: Bearer <audit-read-or-replay-key>
+```
+
+The response includes `healthy`, `alerts`, and `sources` with delivery counts,
+succeeded/failed/processing counts, failure rates, replay attempts and outcomes,
+payload purge counts, and average/maximum processing latency in milliseconds.
+Sources without traffic return zero counts and null latency. Aggregation reads
+persisted audit metadata, so results survive application restarts and do not
+expose evidence payloads. No database migration is required.
+
+The window defaults to 60 minutes and accepts 1–10080 minutes. Delivery and replay
+counts cover attempts created in that window; processing attempts are excluded
+from the failure-rate denominator and latency samples. Replay attempts are also
+included in total delivery counts. Latency measures audit creation through
+completion, including normalization and persistence, rather than full network
+request time. Payload purges are counted by purge timestamp, independently of
+when the delivery was created. Polling also performs the usual retention cleanup.
+
+Alerts report `high_failure_rate` when the failure rate meets or exceeds the
+threshold, `high_latency` when average processing latency meets or exceeds its
+threshold, and `replay_failure` when any replay failed. Failure-rate and latency
+alerts require at least `minimum_completed` completed deliveries or latency
+samples respectively. Thresholds default to 10 samples, a 10% failure rate, and
+1000 ms average latency. Each alert includes its source, measured value, and
+threshold. The endpoint returns HTTP 200 even when `healthy` is false; monitoring
+jobs should inspect the JSON and route alerts to their notification system.
+Alerts are computed on polling and are not pushed or sent by this application.
+
 ## AI-assisted analysis
 
 Set `OPENAI_API_KEY` to enable AI analysis. `OPENAI_MODEL` defaults to `gpt-5-mini`, and `AI_MAX_RANKED_SIGNALS` limits how much correlated evidence is sent to the model. The provider request uses structured output and `store=false`; generated items are rejected if they cite signal IDs that were not in the ranked evidence.
@@ -444,5 +479,5 @@ The existing `GET /incidents/{incident_id}/investigation` remains deterministic 
 
 ## Next step
 
-Expose ingestion delivery health metrics and alerts, including failure rates,
-replay outcomes, payload purges, and source-specific latency.
+Add authenticated ingestion access for Alertmanager and OTLP collectors, with
+source-specific credentials and request size limits.

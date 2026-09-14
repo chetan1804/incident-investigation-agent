@@ -546,6 +546,37 @@ class IngestionReplayResponse(BaseModel):
     result: dict[str, Any]
 
 
+class IngestionSourceHealthResponse(BaseModel):
+    source: str
+    deliveries: int
+    succeeded: int
+    failed: int
+    processing: int
+    failure_rate: float
+    replay_attempts: int
+    replay_succeeded: int
+    replay_failed: int
+    payload_purges: int
+    latency_samples: int
+    average_latency_ms: float | None
+    maximum_latency_ms: float | None
+
+
+class IngestionHealthAlertResponse(BaseModel):
+    source: str
+    kind: Literal["high_failure_rate", "high_latency", "replay_failure"]
+    value: float
+    threshold: float
+
+
+class IngestionHealthResponse(BaseModel):
+    started_at: datetime
+    ended_at: datetime
+    healthy: bool
+    sources: list[IngestionSourceHealthResponse]
+    alerts: list[IngestionHealthAlertResponse]
+
+
 class IngestionPayloadPurgeResponse(BaseModel):
     purged_deliveries: int
 

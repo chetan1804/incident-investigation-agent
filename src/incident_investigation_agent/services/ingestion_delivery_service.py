@@ -212,6 +212,41 @@ class IngestionDeliveryService:
     def purge_expired(self) -> int:
         return self.repository.purge_expired_ingestion_payloads(now=datetime.now(UTC))
 
+    def health(
+        self, *, window_minutes: int = 60, minimum_completed: int = 10,
+        failure_rate_threshold: float = 0.1, latency_threshold_ms: float = 1000,
+    ) -> dict[str, Any]:
+        self.purge_expired()
+        now = datetime.now(UTC)
+        started_at = now - timedelta(minutes=window_minutes)
+        rows = self.repository.ingestion_health_metrics(started_at=started_at, ended_at=now)
+        by_source = {row["source"]: row for row in rows}
+        sources = []
+        alerts = []
+        counters = (
+            "deliveries", "succeeded", "failed", "processing", "replay_attempts",
+            "replay_succeeded", "replay_failed", "latency_samples", "payload_purges",
+        )
+        for source in sorted(self.supported_sources | by_source.keys()):
+            row = by_source.get(source, {"source": source})
+            for counter in counters:
+                row.setdefault(counter, 0)
+            completed = row["succeeded"] + row["failed"]
+            row["failure_rate"] = row["failed"] / completed if completed else 0.0
+            row.setdefault("average_latency_ms", None)
+            row.setdefault("maximum_latency_ms", None)
+            if completed >= minimum_completed and row["failure_rate"] >= failure_rate_threshold:
+                alerts.append({"source": source, "kind": "high_failure_rate", "value": row["failure_rate"], "threshold": failure_rate_threshold})
+            if row["latency_samples"] >= minimum_completed and row["average_latency_ms"] >= latency_threshold_ms:
+                alerts.append({"source": source, "kind": "high_latency", "value": row["average_latency_ms"], "threshold": latency_threshold_ms})
+            if row["replay_failed"]:
+                alerts.append({"source": source, "kind": "replay_failure", "value": row["replay_failed"], "threshold": 1})
+            sources.append(row)
+        return {
+            "started_at": started_at, "ended_at": now,
+            "healthy": not alerts, "sources": sources, "alerts": alerts,
+        }
+
     @staticmethod
     def _redact(
         payload: dict[str, Any] | list[Any] | None,

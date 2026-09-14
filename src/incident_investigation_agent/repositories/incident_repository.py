@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -787,6 +787,41 @@ class IncidentRepository:
             statement = statement.where(IngestionDelivery.status == status)
         statement = statement.order_by(IngestionDelivery.created_at.desc()).limit(limit)
         return list(self.session.scalars(statement).all())
+
+    def ingestion_health_metrics(self, *, started_at: datetime, ended_at: datetime) -> list[dict]:
+        """Aggregate metadata only; payloads are never loaded for monitoring."""
+        d = IngestionDelivery
+        if self.session.get_bind().dialect.name == "sqlite":
+            duration = (func.julianday(d.completed_at) - func.julianday(d.created_at)) * 86400000
+        else:
+            duration = func.extract("epoch", d.completed_at - d.created_at) * 1000
+        duration = case((duration < 0, 0.0), else_=duration)
+
+        def count_when(condition):
+            return func.sum(case((condition, 1), else_=0))
+
+        statement = select(
+            d.source,
+            func.count().label("deliveries"),
+            count_when(d.status == "succeeded").label("succeeded"),
+            count_when(d.status == "failed").label("failed"),
+            count_when(d.status == "processing").label("processing"),
+            count_when(d.replay_of_id.is_not(None)).label("replay_attempts"),
+            count_when((d.replay_of_id.is_not(None)) & (d.status == "succeeded")).label("replay_succeeded"),
+            count_when((d.replay_of_id.is_not(None)) & (d.status == "failed")).label("replay_failed"),
+            func.count(d.completed_at).label("latency_samples"),
+            func.avg(duration).label("average_latency_ms"),
+            func.max(duration).label("maximum_latency_ms"),
+        ).where(d.created_at >= started_at, d.created_at <= ended_at).group_by(d.source)
+        metrics = {row.source: dict(row._mapping) for row in self.session.execute(statement)}
+        purges = self.session.execute(select(
+            d.source, func.count().label("payload_purges")
+        ).where(
+            d.payload_purged_at >= started_at, d.payload_purged_at <= ended_at
+        ).group_by(d.source))
+        for row in purges:
+            metrics.setdefault(row.source, {"source": row.source})["payload_purges"] = row.payload_purges
+        return list(metrics.values())
 
     def purge_expired_ingestion_payloads(self, *, now: datetime) -> int:
         deliveries = list(

@@ -9,6 +9,7 @@ from incident_investigation_agent.api.dependencies import (
     require_ingestion_replay_operator,
 )
 from incident_investigation_agent.api.schemas import (
+    IngestionHealthResponse,
     AIAnalysisFeedbackCreateRequest,
     AIAnalysisFeedbackResponse,
     AIAnalysisResponse,
@@ -508,6 +509,22 @@ def purge_expired_ingestion_payloads(
 ) -> dict:
     purged = IngestionDeliveryService(incident_service).purge_expired()
     return {"purged_deliveries": purged}
+
+
+@app.get("/ingestion-deliveries/health", response_model=IngestionHealthResponse)
+def get_ingestion_health(
+    window_minutes: int = Query(default=60, ge=1, le=10080),
+    minimum_completed: int = Query(default=10, ge=1, le=1000000),
+    failure_rate_threshold: float = Query(default=0.1, gt=0, le=1),
+    latency_threshold_ms: float = Query(default=1000, gt=0, le=86400000),
+    _operator: None = Depends(require_ingestion_audit_reader),
+    incident_service: IncidentService = Depends(get_incident_service),
+) -> dict:
+    return IngestionDeliveryService(incident_service).health(
+        window_minutes=window_minutes, minimum_completed=minimum_completed,
+        failure_rate_threshold=failure_rate_threshold,
+        latency_threshold_ms=latency_threshold_ms,
+    )
 
 
 @app.get(
